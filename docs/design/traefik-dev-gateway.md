@@ -51,7 +51,7 @@ supports atomic route updates without a reload or Docker socket access.
 ## Architecture
 
 ```text
-workstation browser or agent
+workstation browser or HTTP client
           |
           | HTTPS :443
           v
