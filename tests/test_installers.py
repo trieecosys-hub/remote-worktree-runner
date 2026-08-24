@@ -154,6 +154,34 @@ class InstallerTests(unittest.TestCase):
         self.assertIn("Cloudflare Tunnel", security)
         self.assertIn("databases", security)
 
+    def test_preview_registry_public_documentation_contract(self) -> None:
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        architecture = (ROOT / "docs" / "architecture.md").read_text(
+            encoding="utf-8",
+        )
+        security = (ROOT / "docs" / "security-model.md").read_text(
+            encoding="utf-8",
+        )
+
+        for command in (
+            "trie-run preview publish",
+            "trie-run preview list",
+            "trie-run preview unpublish",
+        ):
+            self.assertIn(command, readme)
+        self.assertIn("--preview-slot", readme)
+        self.assertIn("stable handoff", readme)
+        self.assertIn("cleanup refuses", readme)
+        self.assertIn("scripts/verify-preview-registry.sh", readme)
+
+        self.assertIn("ownership record", architecture)
+        self.assertIn("unique network alias", architecture)
+        self.assertIn("rollback", architecture)
+
+        self.assertIn("stateful", security)
+        self.assertIn("shared edge network", security)
+        self.assertIn("active preview", security)
+
 
 if __name__ == "__main__":
     unittest.main()

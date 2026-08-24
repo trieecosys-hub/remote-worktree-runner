@@ -1,0 +1,21 @@
+services:
+  preview:
+    image: ${TRAEFIK_IMAGE:?TRAEFIK_IMAGE is required}
+    command:
+      - --entryPoints.web.address=:8080
+      - --ping=true
+      - --ping.entryPoint=web
+      - --log.level=ERROR
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=8m
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+      start_period: 2s

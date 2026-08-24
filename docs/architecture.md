@@ -75,3 +75,23 @@ logic owns service discovery and writes an explicit hostname-to-service route
 only after the target container is available on `remote-worktree-runner-edge`.
 The gateway initially has no product route and returns HTTP 404 for unmatched
 requests.
+
+### Stable preview registry
+
+The gateway installer stores a private slot configuration that binds each
+stable hostname to one repository. The runner registry is the only component
+that writes managed preview routes. Each route starts with a compact ownership
+record containing the slot, repository, job, Compose project and service,
+container ID, internal port, check path, and publication time.
+
+Publication resolves exactly one running Compose container from project and
+service labels. A health check, when present, must report healthy. The selected
+container joins the external edge network under a unique network alias. The
+registry first requests the container directly, atomically replaces the route,
+then requests the same hostname through the loopback gateway.
+
+If either check fails, rollback restores the previous route bytes and removes
+an unused candidate network attachment. A successful handoff disconnects the
+old container only when no other managed slot references it. Route changes are
+serialized by a filesystem lock, and cleanup checks the same ownership records
+before changing any job Docker resources.

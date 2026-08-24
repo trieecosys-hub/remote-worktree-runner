@@ -245,5 +245,43 @@ class GatewayVerifierTests(unittest.TestCase):
         self.assertNotIn("printenv", content)
 
 
+class PreviewRegistryVerifierTests(unittest.TestCase):
+    """Verify the disposable handoff fixture stays scoped and port-free."""
+
+    def setUp(self) -> None:
+        self.fixture = (
+            REPOSITORY_ROOT
+            / "tests"
+            / "fixtures"
+            / "preview-service"
+            / "compose.yaml"
+        )
+        self.script = REPOSITORY_ROOT / "scripts" / "verify-preview-registry.sh"
+
+    def test_fixture_has_ping_health_and_no_host_ports(self) -> None:
+        content = self.fixture.read_text()
+
+        self.assertIn("${TRAEFIK_IMAGE", content)
+        self.assertIn(":8080", content)
+        self.assertIn("--ping=true", content)
+        self.assertIn("healthcheck:", content)
+        self.assertNotIn("ports:", content)
+        self.assertNotIn("network_mode: host", content)
+
+    def test_verifier_proves_handoff_cleanup_guard_and_exact_cleanup(self) -> None:
+        content = self.script.read_text()
+
+        self.assertIn("set -euo pipefail", content)
+        self.assertIn("preview publish", content)
+        self.assertIn("preview list", content)
+        self.assertIn("preview unpublish", content)
+        self.assertIn('cleanup "$job_b"', content)
+        self.assertIn('[[ "$container_a" != "$container_b" ]]', content)
+        self.assertIn("expected cleanup refusal", content)
+        self.assertNotIn("docker system prune", content)
+        self.assertNotIn("docker volume prune", content)
+        self.assertNotIn("docker network prune", content)
+
+
 if __name__ == "__main__":
     unittest.main()

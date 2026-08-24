@@ -94,7 +94,8 @@ Install and verify it:
 ```bash
 install/install-gateway.sh \
   --host remote-docker \
-  --remote-root /srv/remote-worktree-runner
+  --remote-root /srv/remote-worktree-runner \
+  --preview-slot api=api.preview.example,example-api
 
 scripts/verify-gateway.sh \
   --host remote-docker \
@@ -107,9 +108,52 @@ under `/srv/remote-worktree-runner/services/gateway`, including the live
 so an unmatched request returns HTTP 404. Product deployment tooling can later
 write exact-host routes into that directory without restarting Traefik.
 
+Each `--preview-slot SLOT=HOSTNAME,REPOSITORY` argument creates one stable,
+server-approved destination. Supplying slots replaces the slot configuration
+atomically. Omitting every slot preserves an existing configuration. Slot
+hostnames belong in deployment arguments, not tracked files.
+
 For Cloudflare Tunnel, create one HTTP published application origin that points
 to `http://127.0.0.1:18080` on the server. Keep SSH as its separate TCP route.
 Do not publish product databases, queues, or the Traefik health entrypoint.
+
+## Publish a stable preview
+
+Start a job-owned Compose service without host ports, then publish its internal
+HTTP port into a configured slot:
+
+```bash
+trie-run preview publish \
+  --job api-preview-01 \
+  --slot api \
+  --project example-api-preview-01 \
+  --service web \
+  --port 8080 \
+  --check-path /health
+
+trie-run preview list
+```
+
+Publishing a second verified job to the same slot performs a stable handoff.
+The previous route remains available until the candidate passes both a direct
+container check and a request through the loopback gateway. To remove a route,
+name its current owner:
+
+```bash
+trie-run preview unpublish --job api-preview-01 --slot api
+trie-run cleanup api-preview-01 --volumes
+```
+
+Job cleanup refuses to mutate Docker resources while that job owns an active
+preview. Unpublish or hand off the slot first. A disposable two-job handoff can
+verify a reserved slot configured for this repository:
+
+```bash
+scripts/verify-preview-registry.sh \
+  --host remote-docker \
+  --remote-root /srv/remote-worktree-runner \
+  --slot verification
+```
 
 ## Run and reconnect
 
@@ -143,6 +187,7 @@ trie-run run --job integration-01 --weight heavy \
 - Commands are transported as JSON argument arrays, not reconstructed shell strings.
 - Daemon-wide Docker prune and restart operations are rejected.
 - Cleanup targets the exact job and preserves named volumes unless `--volumes` is explicit.
+- Cleanup refuses a job that still owns an active preview route.
 - The optional gateway is loopback-only, has no dashboard, and does not access
   the Docker socket.
 - The remote Unix account and Docker daemon remain trusted components.

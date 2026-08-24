@@ -27,6 +27,15 @@ Remote Worktree Runner assumes the local operator, selected repository code, rem
   access-controlled route.
 - Product databases, caches, message brokers, and the Docker daemon must remain
   private and must not receive public gateway routes.
+- Preview slots accept only an installer-approved hostname and repository.
+  Publication resolves containers from a job-recorded Compose project and
+  never reads container environment variables.
+- Managed routes contain a validated ownership record. Cleanup refuses to
+  remove a job that owns an active preview, and unpublish requires the current
+  owner job ID.
+- Only stateless HTTP frontends and APIs should be published. Databases,
+  caches, queues, brokers, and other stateful services must remain on private
+  product networks.
 
 ## Residual risks
 
@@ -37,6 +46,8 @@ Remote Worktree Runner assumes the local operator, selected repository code, rem
 - Native `linux/amd64` verification does not prove behavior on ARM64 or another operating system.
 - Containers attached to the shared gateway edge network can exchange traffic.
   Only trusted development workloads should join that network.
+- The shared edge network is a trust boundary, not tenant isolation. A trusted
+  workload on that network can attempt to reach another attached preview.
 - A malformed dynamic route can expose the wrong HTTP service through
   Cloudflare Tunnel. Route generation and hostname ownership remain operator
   responsibilities.
