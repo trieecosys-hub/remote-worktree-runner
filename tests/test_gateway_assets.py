@@ -153,6 +153,56 @@ class GatewayInstallerTests(unittest.TestCase):
         self.assertIn("rsync -a", content)
         self.assertNotIn("--chmod", content)
 
+    def test_dry_run_validates_and_sorts_preview_slots(self) -> None:
+        first = self.run_installer(
+            "--preview-slot",
+            "space=space.preview.example,trie-space",
+            "--preview-slot",
+            "process=process.preview.example,trie-process",
+        )
+        second = self.run_installer(
+            "--preview-slot",
+            "process=process.preview.example,trie-process",
+            "--preview-slot",
+            "space=space.preview.example,trie-space",
+        )
+
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertEqual(second.returncode, 0, second.stderr)
+        first_slots = [line for line in first.stdout.splitlines() if line.startswith("slot: ")]
+        second_slots = [line for line in second.stdout.splitlines() if line.startswith("slot: ")]
+        self.assertEqual(first_slots, second_slots)
+        self.assertEqual(
+            first_slots,
+            [
+                "slot: process -> process.preview.example (trie-process)",
+                "slot: space -> space.preview.example (trie-space)",
+            ],
+        )
+
+    def test_rejects_duplicate_or_invalid_preview_slots(self) -> None:
+        for arguments in (
+            (
+                "--preview-slot",
+                "process=process.preview.example,trie-process",
+                "--preview-slot",
+                "process=other.preview.example,trie-process",
+            ),
+            ("--preview-slot", "Bad=process.preview.example,trie-process"),
+            ("--preview-slot", "process=*.preview.example,trie-process"),
+            ("--preview-slot", "process=process.preview.example,Bad_Repo"),
+        ):
+            with self.subTest(arguments=arguments):
+                result = self.run_installer(*arguments)
+                self.assertNotEqual(result.returncode, 0)
+
+    def test_slot_configuration_is_runtime_only(self) -> None:
+        self.assertFalse((GATEWAY_ROOT / "preview-slots.json").exists())
+        content = self.script.read_text()
+        self.assertIn("preview-slots.json", content)
+        self.assertIn("install -m 0600", content)
+        self.assertIn('[[ ! -f "$install_root/preview-slots.json" ]]', content)
+
 
 class GatewayVerifierTests(unittest.TestCase):
     """Verify remote checks cover gateway health, isolation, and hot reload."""

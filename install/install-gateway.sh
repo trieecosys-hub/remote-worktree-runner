@@ -12,9 +12,13 @@ bind_port=18080
 project_name=remote-worktree-runner-gateway
 network_name=remote-worktree-runner-edge
 dry_run=false
+preview_slots=()
+preview_summary=""
+local_stage=""
+remote_stage=""
 
 usage() {
-  echo "usage: $0 [--host HOST] [--remote-root PATH] [--bind-host 127.0.0.1] [--bind-port PORT] [--project-name NAME] [--network-name NAME] [--dry-run]" >&2
+  echo "usage: $0 [--host HOST] [--remote-root PATH] [--bind-host 127.0.0.1] [--bind-port PORT] [--project-name NAME] [--network-name NAME] [--preview-slot SLOT=HOSTNAME,REPOSITORY] [--dry-run]" >&2
 }
 
 while [[ $# -gt 0 ]]; do
@@ -25,6 +29,7 @@ while [[ $# -gt 0 ]]; do
     --bind-port) bind_port=${2:?missing bind port}; shift 2 ;;
     --project-name) project_name=${2:?missing project name}; shift 2 ;;
     --network-name) network_name=${2:?missing network name}; shift 2 ;;
+    --preview-slot) preview_slots+=("${2:?missing preview slot}"); shift 2 ;;
     --dry-run) dry_run=true; shift ;;
     *) usage; exit 2 ;;
   esac
@@ -60,12 +65,52 @@ if [[ ! "${TRAEFIK_IMAGE:-}" =~ ^[A-Za-z0-9./:_-]+@sha256:[0-9a-f]{64}$ ]]; then
   exit 1
 fi
 
+cleanup() {
+  if [[ -n "$local_stage" && -d "$local_stage" ]]; then
+    rm -rf -- "$local_stage"
+  fi
+  if [[ -n "$remote_stage" ]]; then
+    ssh "$host" bash -s -- "$remote_stage" >/dev/null 2>&1 <<'REMOTE_CLEANUP' || true
+set -euo pipefail
+remote_stage=$1
+rm -rf -- "$remote_stage"
+REMOTE_CLEANUP
+  fi
+}
+trap cleanup EXIT
+
+if (( ${#preview_slots[@]} > 0 )); then
+  local_stage=$(mktemp -d)
+  preview_file="$local_stage/preview-slots.json"
+  preview_summary=$(PYTHONPATH="$repository_root/src" \
+    python3 - "$preview_file" "${preview_slots[@]}" <<'PYTHON'
+from pathlib import Path
+import sys
+
+from trie_remote.preview import parse_slot_spec, write_slot_configuration
+
+try:
+    slots = [parse_slot_spec(value) for value in sys.argv[2:]]
+    write_slot_configuration(Path(sys.argv[1]), slots)
+except ValueError as error:
+    print(f"invalid preview slot: {error}", file=sys.stderr)
+    raise SystemExit(2) from error
+
+for slot in sorted(slots, key=lambda item: item.slot):
+    print(f"slot: {slot.slot} -> {slot.hostname} ({slot.repository})")
+PYTHON
+  )
+fi
+
 if $dry_run; then
   echo "target: $host:$remote_root"
   echo "project: $project_name"
   echo "network: $network_name"
   echo "endpoint: http://$bind_host:$bind_port"
   echo "image: $TRAEFIK_IMAGE"
+  if [[ -n "$preview_summary" ]]; then
+    printf '%s\n' "$preview_summary"
+  fi
   exit 0
 fi
 
@@ -101,19 +146,14 @@ mktemp -d "$remote_root/services/.gateway-upload.XXXXXX"
 REMOTE_STAGE
 )
 
-cleanup() {
-  ssh "$host" bash -s -- "$remote_stage" >/dev/null 2>&1 <<'REMOTE_CLEANUP' || true
-set -euo pipefail
-remote_stage=$1
-rm -rf -- "$remote_stage"
-REMOTE_CLEANUP
-}
-trap cleanup EXIT
-
-rsync -a \
+rsync_sources=(
   "$repository_root/gateway/compose.yaml" \
-  "$repository_root/gateway/traefik-static.yaml" \
-  "$host:$remote_stage/"
+  "$repository_root/gateway/traefik-static.yaml"
+)
+if [[ -n "$local_stage" ]]; then
+  rsync_sources+=("$local_stage/preview-slots.json")
+fi
+rsync -a "${rsync_sources[@]}" "$host:$remote_stage/"
 
 ssh "$host" bash -s -- \
   "$remote_root" "$remote_stage" "$bind_host" "$bind_port" \
@@ -159,6 +199,21 @@ umask 077
   printf 'GATEWAY_EDGE_NETWORK=%s\n' "$network_name"
 } >"$install_root/gateway.env.upload"
 mv "$install_root/gateway.env.upload" "$install_root/gateway.env"
+
+if [[ -f "$remote_stage/preview-slots.json" ]]; then
+  install -m 0600 \
+    "$remote_stage/preview-slots.json" \
+    "$install_root/preview-slots.json.upload"
+  mv \
+    "$install_root/preview-slots.json.upload" \
+    "$install_root/preview-slots.json"
+elif [[ ! -f "$install_root/preview-slots.json" ]]; then
+  printf '{}\n' >"$install_root/preview-slots.json.upload"
+  chmod 0600 "$install_root/preview-slots.json.upload"
+  mv \
+    "$install_root/preview-slots.json.upload" \
+    "$install_root/preview-slots.json"
+fi
 
 docker compose \
   --project-name "$project_name" \
