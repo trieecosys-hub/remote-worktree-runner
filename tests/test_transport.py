@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 import subprocess
-import tempfile
 import unittest
 
 from trie_remote.repository import RepositoryState
@@ -15,15 +14,21 @@ class RecordingRunner:
     def __init__(self) -> None:
         self.calls: list[tuple[list[str], dict[str, object]]] = []
 
-    def __call__(self, argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+    def __call__(
+        self, argv: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
         self.calls.append((list(argv), dict(kwargs)))
-        stdout = '{"workspace":"/srv/trie-platform/workspaces/trie-space/alpha/primary"}\n'
+        stdout = (
+            '{"workspace":"/srv/trie-platform/workspaces/trie-space/alpha/primary"}\n'
+        )
         return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr="")
 
 
 class TransportTests(unittest.TestCase):
     def test_sync_policy_excludes_nested_build_caches(self) -> None:
-        policy = (Path(__file__).resolve().parents[1] / "config/sync-excludes.txt").read_text()
+        policy = (
+            Path(__file__).resolve().parents[1] / "config/sync-excludes.txt"
+        ).read_text()
         self.assertIn("- target/", policy)
         self.assertIn("- node_modules/", policy)
         self.assertNotIn("- /target", policy)
@@ -67,6 +72,30 @@ class TransportTests(unittest.TestCase):
                 "trie-docker:/srv/trie-platform/repos/trie-space.git",
                 f"{self.state.commit}:refs/trie-jobs/alpha/primary",
             ],
+        )
+
+    def test_workspace_path_uses_the_server_contract(self) -> None:
+        workspace = self.transport.workspace_path(self.state, "alpha", "primary")
+
+        argv, _kwargs = self.runner.calls[-1]
+        self.assertEqual(
+            argv,
+            [
+                "ssh",
+                "trie-docker",
+                "/srv/trie-platform/bin/trie-runner",
+                "workspace-path",
+                "--job",
+                "alpha",
+                "--repository",
+                "trie-space",
+                "--role",
+                "primary",
+            ],
+        )
+        self.assertEqual(
+            workspace,
+            "/srv/trie-platform/workspaces/trie-space/alpha/primary",
         )
 
     def test_rsync_preserves_source_path_as_one_argument(self) -> None:

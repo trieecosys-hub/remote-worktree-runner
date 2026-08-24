@@ -82,6 +82,32 @@ def _reconcile_inactive_unit(
         raise
 
 
+def _validate_spec(config: RunnerConfig, paths: ServerPaths, spec: JobSpec) -> None:
+    """Validate repositories and workspace paths in a submitted job contract."""
+    repositories = {spec.repository, *spec.includes.values()}
+    disallowed = sorted(repositories - config.allowed_repositories)
+    if disallowed:
+        raise ValueError(f"repository not allowed: {disallowed[0]}")
+    if spec.workspaces.get("primary") != spec.workspace:
+        raise ValueError("primary workspace does not match workspace")
+    expected_roles = {"primary", *spec.includes}
+    if set(spec.workspaces) != expected_roles:
+        raise ValueError("workspace roles do not match included repositories")
+    for role, workspace in spec.workspaces.items():
+        repository = spec.repository if role == "primary" else spec.includes[role]
+        expected = ensure_below(
+            paths.workspaces,
+            paths.workspaces / repository / spec.job_id / role,
+        )
+        if ensure_below(paths.workspaces, Path(workspace)) != expected:
+            raise ValueError(f"unexpected workspace path for role: {role}")
+
+
+def _missing_job(job_id: str) -> dict[str, object]:
+    """Return a stable response for a job that may still be uploading."""
+    return {"job_id": job_id, "state": "not-found", "retryable": True}
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the server CLI parser."""
     parser = argparse.ArgumentParser(prog="trie-runner")
@@ -105,6 +131,7 @@ def build_parser() -> argparse.ArgumentParser:
     docker_parser.add_argument("--job", required=True)
     docker_parser.add_argument("docker_arguments", nargs=argparse.REMAINDER)
 
+    subparsers.add_parser("reserve")
     subparsers.add_parser("start")
 
     worker_parser = subparsers.add_parser("worker")
@@ -231,6 +258,7 @@ def main(argv: list[str] | None = None) -> int:
         os.execv("/usr/bin/docker", ["docker", *docker_arguments])
 
     if arguments.command == "doctor":
+
         def version(command: list[str]) -> str | None:
             try:
                 result = subprocess.run(
@@ -247,10 +275,14 @@ def main(argv: list[str] | None = None) -> int:
             "reachable": True,
             "architecture": platform.machine(),
             "python": platform.python_version(),
-            "docker": version(["/usr/bin/docker", "version", "--format", "{{.Server.Version}}"]),
+            "docker": version(
+                ["/usr/bin/docker", "version", "--format", "{{.Server.Version}}"]
+            ),
             "compose": version(["/usr/bin/docker", "compose", "version", "--short"]),
             "buildx": version(["/usr/bin/docker", "buildx", "version"]),
-            "kubectl": version([str(paths.bin / "kubectl"), "version", "--client", "--output=yaml"]),
+            "kubectl": version(
+                [str(paths.bin / "kubectl"), "version", "--client", "--output=yaml"]
+            ),
             "kind": version([str(paths.bin / "kind"), "version"]),
             "jq": version([str(paths.bin / "jq"), "--version"]),
             "systemd_user": version(["systemctl", "--user", "is-system-running"]),
@@ -260,18 +292,30 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(report, sort_keys=True))
         return 0 if report["docker"] and report["systemd_user"] else 1
 
+    if arguments.command == "reserve":
+        spec = JobSpec.from_dict(json.load(sys.stdin))
+        _validate_spec(config, paths, spec)
+        store.create(spec)
+        print(json.dumps({"job_id": spec.job_id, "state": "preparing"}))
+        return 0
+
     if arguments.command == "start":
         spec = JobSpec.from_dict(json.load(sys.stdin))
-        if spec.repository not in config.allowed_repositories:
-            raise ValueError(f"repository not allowed: {spec.repository}")
-        ensure_below(paths.workspaces, Path(spec.workspace))
+        _validate_spec(config, paths, spec)
+        reserved = store.exists(spec.job_id)
+        if reserved:
+            if store.load(spec.job_id) != spec:
+                raise ValueError("job reservation does not match start request")
+            if store.status(spec.job_id)["state"] != "preparing":
+                raise ValueError("only a preparing job can be started")
         guard = DiskGuard(
             config.minimum_free_gib,
             config.warning_free_gib,
             config.cancellation_free_gib,
         )
         free_bytes = guard.admit(paths.root, spec.weight)
-        store.create(spec)
+        if not reserved:
+            store.create(spec)
         unit = f"trie-job-{spec.job_id}"
         store.transition(
             spec.job_id,
@@ -306,6 +350,9 @@ def main(argv: list[str] | None = None) -> int:
         return run_job(paths, arguments.job)
 
     if arguments.command == "status":
+        if not store.exists(arguments.job):
+            print(json.dumps(_missing_job(arguments.job), sort_keys=True))
+            return 3
         print(json.dumps(store.status(arguments.job), sort_keys=True))
         return 0
 
@@ -325,8 +372,21 @@ def main(argv: list[str] | None = None) -> int:
             time.sleep(1)
 
     if arguments.command == "cancel":
+        if not store.exists(arguments.job):
+            print(json.dumps(_missing_job(arguments.job), sort_keys=True))
+            return 3
         status = store.status(arguments.job)
         if status["state"] in FINAL_STATES:
+            print(json.dumps(status, sort_keys=True))
+            return 0
+        if status["state"] == "preparing":
+            status = store.transition(
+                arguments.job,
+                "cancelled",
+                exit_code=130,
+                reason="cancelled before worker start",
+                finished_at=utc_now(),
+            )
             print(json.dumps(status, sort_keys=True))
             return 0
         reconciled = _reconcile_inactive_unit(store, arguments.job, status)
@@ -382,13 +442,24 @@ def main(argv: list[str] | None = None) -> int:
             repository = spec.repository if role == "primary" else spec.includes[role]
             mirror = paths.repos / f"{repository}.git"
             subprocess.run(
-                ["git", f"--git-dir={mirror}", "worktree", "remove", "--force", str(candidate)],
+                [
+                    "git",
+                    f"--git-dir={mirror}",
+                    "worktree",
+                    "remove",
+                    "--force",
+                    str(candidate),
+                ],
                 check=False,
             )
             workspace_job = paths.workspaces / repository / spec.job_id
             if workspace_job.exists():
                 shutil.rmtree(ensure_below(paths.workspaces, workspace_job))
-        print(json.dumps({"job_id": spec.job_id, "cleaned": True, "volumes": arguments.volumes}))
+        print(
+            json.dumps(
+                {"job_id": spec.job_id, "cleaned": True, "volumes": arguments.volumes}
+            )
+        )
         return 0
 
     repository = validate_identifier(arguments.repository, "repository")

@@ -128,14 +128,15 @@ def run_worktrees(
     validate_identifier(job_id, "job")
     validate_requested_command(argv)
     states = {"primary": RepositoryState.discover(primary)}
-    states.update({role: RepositoryState.discover(path) for role, path in includes.items()})
-    remote_workspaces: dict[str, str] = {}
+    states.update(
+        {role: RepositoryState.discover(path) for role, path in includes.items()}
+    )
+    remote_workspaces = {
+        role: transport.workspace_path(state, job_id, role)
+        for role, state in states.items()
+    }
     include_repositories: dict[str, str] = {}
     for role, state in states.items():
-        transport.push_commit(state, job_id, role)
-        workspace = transport.prepare_workspace(state, job_id, role)
-        transport.sync_overlay(state, workspace)
-        remote_workspaces[role] = workspace
         if role != "primary":
             include_repositories[role] = state.name
 
@@ -150,15 +151,47 @@ def run_worktrees(
         created_at=datetime.now(timezone.utc).isoformat(),
     )
     transport.ssh(
-        ["start"],
+        ["reserve"],
         input_bytes=json.dumps(spec.to_dict()).encode(),
     )
     try:
+        for role, state in states.items():
+            transport.push_commit(state, job_id, role)
+            workspace = transport.prepare_workspace(state, job_id, role)
+            if workspace != remote_workspaces[role]:
+                raise ValueError(f"server workspace changed for role: {role}")
+            transport.sync_overlay(state, workspace)
+        transport.ssh(
+            ["start"],
+            input_bytes=json.dumps(spec.to_dict()).encode(),
+        )
+    except (Exception, KeyboardInterrupt):
+        try:
+            cancellation = transport.ssh(["cancel", job_id], check=False)
+            if cancellation.returncode != 0:
+                print(
+                    f"trie-run: preparing job cancellation returned "
+                    f"{cancellation.returncode}: {job_id}",
+                    file=sys.stderr,
+                )
+        except Exception as cancellation_error:
+            print(
+                f"trie-run: could not cancel preparing job {job_id}: "
+                f"{cancellation_error}",
+                file=sys.stderr,
+            )
+        raise
+    try:
         transport.ssh(["logs", "-f", job_id], capture_output=False)
     except KeyboardInterrupt:
-        print(f"\nLog follow interrupted; job {job_id} continues on server", file=sys.stderr)
+        print(
+            f"\nLog follow interrupted; job {job_id} continues on server",
+            file=sys.stderr,
+        )
     result = transport.ssh(["status", job_id])
-    output = result.stdout.decode() if isinstance(result.stdout, bytes) else result.stdout
+    output = (
+        result.stdout.decode() if isinstance(result.stdout, bytes) else result.stdout
+    )
     status = json.loads(output)
     print(json.dumps(status, indent=2, sort_keys=True))
     if status["state"] not in FINAL_STATES:
@@ -172,13 +205,19 @@ def _doctor(config: RunnerConfig, transport: Transport, show_sync: bool) -> int:
         for command in ("git", "rsync", "ssh", "cloudflared")
     }
     result = transport.ssh(["doctor"], check=False)
-    output = result.stdout.decode() if isinstance(result.stdout, bytes) else result.stdout
+    output = (
+        result.stdout.decode() if isinstance(result.stdout, bytes) else result.stdout
+    )
     report = {
         "local": local,
-        "server": json.loads(output) if result.returncode == 0 and output else {"reachable": False},
+        "server": json.loads(output)
+        if result.returncode == 0 and output
+        else {"reachable": False},
     }
     if show_sync:
-        report["sync_excludes"] = _exclude_file().read_text(encoding="utf-8").splitlines()
+        report["sync_excludes"] = (
+            _exclude_file().read_text(encoding="utf-8").splitlines()
+        )
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0 if all(local.values()) and result.returncode == 0 else 1
 
@@ -209,7 +248,11 @@ def _preview(arguments: argparse.Namespace, transport: Transport) -> int:
         )
     result = transport.ssh(remote_arguments)
     if result.stdout:
-        output = result.stdout.decode() if isinstance(result.stdout, bytes) else result.stdout
+        output = (
+            result.stdout.decode()
+            if isinstance(result.stdout, bytes)
+            else result.stdout
+        )
         print(output, end="" if output.endswith("\n") else "\n")
     return int(result.returncode)
 
@@ -247,9 +290,17 @@ def main(argv: list[str] | None = None) -> int:
         remote_arguments.append(arguments.job)
         if arguments.command == "cleanup" and arguments.volumes:
             remote_arguments.append("--volumes")
-        result = transport.ssh(remote_arguments, capture_output=arguments.command != "logs")
+        result = transport.ssh(
+            remote_arguments,
+            check=arguments.command not in {"status", "cancel"},
+            capture_output=arguments.command != "logs",
+        )
         if result.stdout:
-            output = result.stdout.decode() if isinstance(result.stdout, bytes) else result.stdout
+            output = (
+                result.stdout.decode()
+                if isinstance(result.stdout, bytes)
+                else result.stdout
+            )
             print(output, end="" if output.endswith("\n") else "\n")
         return int(result.returncode)
     except ValueError as error:
@@ -257,9 +308,17 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     except subprocess.CalledProcessError as error:
         if error.stderr:
-            message = error.stderr.decode() if isinstance(error.stderr, bytes) else error.stderr
+            message = (
+                error.stderr.decode()
+                if isinstance(error.stderr, bytes)
+                else error.stderr
+            )
             print(message, file=sys.stderr, end="" if message.endswith("\n") else "\n")
         return int(error.returncode or 1)
     except KeyboardInterrupt:
-        print("\ntrie-run: local transfer interrupted; no queued job was stopped", file=sys.stderr)
+        print(
+            "\ntrie-run: local transfer interrupted; "
+            "preparing job cancellation was requested",
+            file=sys.stderr,
+        )
         return 130

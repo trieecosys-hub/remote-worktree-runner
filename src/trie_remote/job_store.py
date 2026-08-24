@@ -45,7 +45,9 @@ class JobSpec:
         validate_identifier(self.repository, "repository")
         if self.weight not in {"light", "heavy"}:
             raise ValueError("weight must be light or heavy")
-        if not self.argv or not all(isinstance(value, str) and value for value in self.argv):
+        if not self.argv or not all(
+            isinstance(value, str) and value for value in self.argv
+        ):
             raise ValueError("argv must contain non-empty strings")
         for role in self.workspaces:
             validate_identifier(role, "role")
@@ -64,7 +66,9 @@ class JobSpec:
             repository=str(value["repository"]),
             workspace=str(value["workspace"]),
             workspaces={str(k): str(v) for k, v in dict(value["workspaces"]).items()},
-            includes={str(k): str(v) for k, v in dict(value.get("includes", {})).items()},
+            includes={
+                str(k): str(v) for k, v in dict(value.get("includes", {})).items()
+            },
             weight=str(value["weight"]),
             argv=tuple(str(item) for item in value["argv"]),
             created_at=str(value.get("created_at") or utc_now()),
@@ -84,7 +88,9 @@ class JobStore:
 
     def _write_json(self, path: Path, value: Any) -> None:
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        descriptor, temporary = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+        descriptor, temporary = tempfile.mkstemp(
+            dir=path.parent, prefix=f".{path.name}."
+        )
         try:
             with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
                 json.dump(value, stream, indent=2, sort_keys=True)
@@ -112,6 +118,13 @@ class JobStore:
         output.chmod(0o600)
         return directory
 
+    def exists(self, job_id: str) -> bool:
+        """Return whether a complete job record has been materialized."""
+        directory = self.job_directory(job_id)
+        return (directory / "metadata.json").is_file() and (
+            directory / "status"
+        ).is_file()
+
     def load(self, job_id: str) -> JobSpec:
         """Load a stored job specification."""
         path = self.job_directory(job_id) / "metadata.json"
@@ -135,7 +148,9 @@ class JobStore:
     def finish(self, job_id: str, exit_code: int) -> dict[str, Any]:
         """Record exact process exit and its corresponding final state."""
         state = "passed" if exit_code == 0 else "failed"
-        return self.transition(job_id, state, exit_code=int(exit_code), finished_at=utc_now())
+        return self.transition(
+            job_id, state, exit_code=int(exit_code), finished_at=utc_now()
+        )
 
     def log_path(self, job_id: str) -> Path:
         """Return the validated log path."""
@@ -147,4 +162,3 @@ class JobStore:
         path.touch(mode=0o600)
         path.chmod(0o600)
         return path
-

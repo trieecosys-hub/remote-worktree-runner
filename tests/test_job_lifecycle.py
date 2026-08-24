@@ -22,6 +22,205 @@ from trie_remote.server_paths import ServerPaths
 
 
 class JobLifecycleTests(unittest.TestCase):
+    def test_missing_status_and_cancel_return_structured_retryable_results(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "root"
+            environment = {
+                "REMOTE_RUNNER_ROOT": str(root),
+                "REMOTE_RUNNER_ALLOWED_REPOSITORIES": "trie-space",
+            }
+            for command in ("status", "cancel"):
+                with self.subTest(command=command):
+                    output = StringIO()
+                    with (
+                        patch.dict(os.environ, environment, clear=True),
+                        patch("trie_remote.server_cli.subprocess.run") as run,
+                        redirect_stdout(output),
+                    ):
+                        result = server_main([command, "not-created"])
+
+                    self.assertEqual(result, 3)
+                    self.assertEqual(
+                        json.loads(output.getvalue()),
+                        {
+                            "job_id": "not-created",
+                            "retryable": True,
+                            "state": "not-found",
+                        },
+                    )
+                    run.assert_not_called()
+
+    def test_reserve_exposes_preparing_job_and_cancel_finishes_it(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "root"
+            workspace = root / "workspaces" / "trie-space" / "reserved" / "primary"
+            spec = JobSpec(
+                job_id="reserved",
+                repository="trie-space",
+                workspace=str(workspace),
+                workspaces={"primary": str(workspace)},
+                includes={},
+                weight="light",
+                argv=("true",),
+                created_at="2026-08-24T00:00:00+00:00",
+            )
+            environment = {
+                "REMOTE_RUNNER_ROOT": str(root),
+                "REMOTE_RUNNER_ALLOWED_REPOSITORIES": "trie-space",
+            }
+            reserve_output = StringIO()
+            with (
+                patch.dict(os.environ, environment, clear=True),
+                patch("sys.stdin", StringIO(json.dumps(spec.to_dict()))),
+                redirect_stdout(reserve_output),
+            ):
+                reserve_result = server_main(["reserve"])
+
+            self.assertEqual(reserve_result, 0)
+            self.assertEqual(
+                json.loads(reserve_output.getvalue())["state"], "preparing"
+            )
+            store = JobStore(ServerPaths.from_root(root))
+            self.assertEqual(store.status("reserved")["state"], "preparing")
+
+            cancel_output = StringIO()
+            with (
+                patch.dict(os.environ, environment, clear=True),
+                patch("trie_remote.server_cli.subprocess.run") as run,
+                redirect_stdout(cancel_output),
+            ):
+                cancel_result = server_main(["cancel", "reserved"])
+
+            self.assertEqual(cancel_result, 0)
+            cancelled = json.loads(cancel_output.getvalue())
+            self.assertEqual(cancelled["state"], "cancelled")
+            self.assertEqual(cancelled["exit_code"], 130)
+            self.assertEqual(cancelled["reason"], "cancelled before worker start")
+            run.assert_not_called()
+            self.assertFalse(
+                (store.job_directory("reserved") / "cancel.requested").exists()
+            )
+
+    def test_start_accepts_an_exact_reservation_and_rejects_a_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "root"
+            workspace = root / "workspaces" / "trie-space" / "reserved" / "primary"
+            spec = JobSpec(
+                job_id="reserved",
+                repository="trie-space",
+                workspace=str(workspace),
+                workspaces={"primary": str(workspace)},
+                includes={},
+                weight="light",
+                argv=("true",),
+                created_at="2026-08-24T00:00:00+00:00",
+            )
+            environment = {
+                "REMOTE_RUNNER_ROOT": str(root),
+                "REMOTE_RUNNER_ALLOWED_REPOSITORIES": "trie-space",
+                "REMOTE_RUNNER_MINIMUM_FREE_GIB": "0",
+                "REMOTE_RUNNER_WARNING_FREE_GIB": "0",
+                "REMOTE_RUNNER_CANCELLATION_FREE_GIB": "0",
+            }
+            with (
+                patch.dict(os.environ, environment, clear=True),
+                patch("sys.stdin", StringIO(json.dumps(spec.to_dict()))),
+                redirect_stdout(StringIO()),
+            ):
+                self.assertEqual(server_main(["reserve"]), 0)
+
+            output = StringIO()
+            with (
+                patch.dict(os.environ, environment, clear=True),
+                patch("sys.stdin", StringIO(json.dumps(spec.to_dict()))),
+                patch("trie_remote.server_cli.subprocess.run") as run,
+                redirect_stdout(output),
+            ):
+                result = server_main(["start"])
+
+            self.assertEqual(result, 0)
+            self.assertEqual(json.loads(output.getvalue())["state"], "queued")
+            run.assert_called_once()
+            self.assertEqual(
+                JobStore(ServerPaths.from_root(root)).status("reserved")["state"],
+                "queued",
+            )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "root"
+            workspace = root / "workspaces" / "trie-space" / "reserved" / "primary"
+            spec = JobSpec(
+                job_id="reserved",
+                repository="trie-space",
+                workspace=str(workspace),
+                workspaces={"primary": str(workspace)},
+                includes={},
+                weight="light",
+                argv=("true",),
+                created_at="2026-08-24T00:00:00+00:00",
+            )
+            changed = JobSpec.from_dict({**spec.to_dict(), "argv": ["false"]})
+            environment = {
+                "REMOTE_RUNNER_ROOT": str(root),
+                "REMOTE_RUNNER_ALLOWED_REPOSITORIES": "trie-space",
+                "REMOTE_RUNNER_MINIMUM_FREE_GIB": "0",
+                "REMOTE_RUNNER_WARNING_FREE_GIB": "0",
+                "REMOTE_RUNNER_CANCELLATION_FREE_GIB": "0",
+            }
+            with (
+                patch.dict(os.environ, environment, clear=True),
+                patch("sys.stdin", StringIO(json.dumps(spec.to_dict()))),
+                redirect_stdout(StringIO()),
+            ):
+                self.assertEqual(server_main(["reserve"]), 0)
+            with (
+                patch.dict(os.environ, environment, clear=True),
+                patch("sys.stdin", StringIO(json.dumps(changed.to_dict()))),
+                patch("trie_remote.server_cli.subprocess.run") as run,
+                self.assertRaisesRegex(ValueError, "reservation does not match"),
+            ):
+                server_main(["start"])
+            run.assert_not_called()
+
+    def test_start_without_reservation_remains_backward_compatible(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "root"
+            workspace = root / "workspaces" / "trie-space" / "legacy" / "primary"
+            spec = JobSpec(
+                job_id="legacy",
+                repository="trie-space",
+                workspace=str(workspace),
+                workspaces={"primary": str(workspace)},
+                includes={},
+                weight="light",
+                argv=("true",),
+                created_at="2026-08-24T00:00:00+00:00",
+            )
+            environment = {
+                "REMOTE_RUNNER_ROOT": str(root),
+                "REMOTE_RUNNER_ALLOWED_REPOSITORIES": "trie-space",
+                "REMOTE_RUNNER_MINIMUM_FREE_GIB": "0",
+                "REMOTE_RUNNER_WARNING_FREE_GIB": "0",
+                "REMOTE_RUNNER_CANCELLATION_FREE_GIB": "0",
+            }
+            output = StringIO()
+            with (
+                patch.dict(os.environ, environment, clear=True),
+                patch("sys.stdin", StringIO(json.dumps(spec.to_dict()))),
+                patch("trie_remote.server_cli.subprocess.run") as run,
+                redirect_stdout(output),
+            ):
+                result = server_main(["start"])
+
+            self.assertEqual(result, 0)
+            self.assertEqual(json.loads(output.getvalue())["state"], "queued")
+            run.assert_called_once()
+            store = JobStore(ServerPaths.from_root(root))
+            self.assertEqual(store.load("legacy"), spec)
+            self.assertEqual(store.status("legacy")["state"], "queued")
+
     def test_worker_persists_output_and_exit_code(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             paths = ServerPaths.from_root(Path(temporary) / "root")

@@ -65,6 +65,26 @@ class Transport:
             capture_output=True,
         )
 
+    def workspace_path(self, state: RepositoryState, job_id: str, role: str) -> str:
+        """Resolve the deterministic server workspace before source transfer."""
+        result = self.ssh(
+            [
+                "workspace-path",
+                "--job",
+                job_id,
+                "--repository",
+                state.name,
+                "--role",
+                role,
+            ],
+        )
+        output = (
+            result.stdout.decode()
+            if isinstance(result.stdout, bytes)
+            else result.stdout
+        )
+        return str(json.loads(output)["workspace"])
+
     def prepare_workspace(self, state: RepositoryState, job_id: str, role: str) -> str:
         """Create the detached server worktree and return its path."""
         result = self.ssh(
@@ -80,7 +100,11 @@ class Transport:
                 role,
             ],
         )
-        output = result.stdout.decode() if isinstance(result.stdout, bytes) else result.stdout
+        output = (
+            result.stdout.decode()
+            if isinstance(result.stdout, bytes)
+            else result.stdout
+        )
         return str(json.loads(output)["workspace"])
 
     def sync_overlay(self, state: RepositoryState, remote_workspace: str) -> None:
