@@ -8,6 +8,7 @@ from io import StringIO
 from pathlib import Path
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -51,6 +52,257 @@ class JobLifecycleTests(unittest.TestCase):
             self.assertEqual(status["state"], "failed")
             self.assertEqual(status["exit_code"], 7)
             self.assertIn("marker", store.log_path("fixture").read_text())
+
+    def test_worker_records_spawn_failure_without_logging_arguments(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = ServerPaths.from_root(Path(temporary) / "root")
+            paths.create()
+            workspace = Path(temporary) / "workspace"
+            workspace.mkdir()
+            spec = JobSpec(
+                job_id="spawn-failure",
+                repository="trie-space",
+                workspace=str(workspace),
+                workspaces={"primary": str(workspace)},
+                includes={},
+                weight="light",
+                argv=("trie-runner-missing-executable", "private-argument-marker"),
+                created_at="2026-08-24T00:00:00+00:00",
+            )
+            store = JobStore(paths)
+            store.create(spec)
+            store.transition("spawn-failure", "queued")
+
+            exit_code = run_job(
+                paths,
+                "spawn-failure",
+                create_builder=False,
+                disk_guard=DiskGuard(0, 0, 0, lambda _path: 1024**4),
+            )
+
+            self.assertEqual(exit_code, 127)
+            status = store.status("spawn-failure")
+            self.assertEqual(status["state"], "failed")
+            self.assertEqual(status["exit_code"], 127)
+            output = store.log_path("spawn-failure").read_text()
+            self.assertIn("command spawn failed", output)
+            self.assertIn("FileNotFoundError", output)
+            self.assertNotIn("private-argument-marker", output)
+
+    def test_cancel_reconciles_a_collected_worker_unit(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "root"
+            paths = ServerPaths.from_root(root)
+            paths.create()
+            workspace = Path(temporary) / "workspace"
+            workspace.mkdir()
+            spec = JobSpec(
+                job_id="stale-job",
+                repository="trie-space",
+                workspace=str(workspace),
+                workspaces={"primary": str(workspace)},
+                includes={},
+                weight="light",
+                argv=("true",),
+                created_at="2026-08-24T00:00:00+00:00",
+            )
+            store = JobStore(paths)
+            store.create(spec)
+            store.transition("stale-job", "queued", unit="trie-job-stale-job")
+            store.transition("stale-job", "running")
+            environment = {
+                "REMOTE_RUNNER_ROOT": str(root),
+                "REMOTE_RUNNER_ALLOWED_REPOSITORIES": "trie-space",
+            }
+            output = StringIO()
+            with (
+                patch.dict(os.environ, environment, clear=True),
+                patch("trie_remote.server_cli.subprocess.run") as run,
+                patch("trie_remote.server_cli.time.monotonic", side_effect=[0, 21]),
+                patch("trie_remote.server_cli.time.sleep") as sleep,
+                redirect_stdout(output),
+            ):
+                run.return_value.stdout = "LoadState=not-found\nActiveState=inactive\n"
+                result = server_main(["cancel", "stale-job"])
+
+            self.assertEqual(result, 0)
+            status = store.status("stale-job")
+            self.assertEqual(status["state"], "cancelled")
+            self.assertEqual(status["exit_code"], 127)
+            self.assertIn("worker unit is no longer active", status["reason"])
+            self.assertEqual(json.loads(output.getvalue())["state"], "cancelled")
+            cancellation = store.job_directory("stale-job") / "cancel.requested"
+            self.assertFalse(cancellation.exists())
+            sleep.assert_not_called()
+            self.assertEqual(run.call_count, 1)
+            self.assertIn("show", run.call_args.args[0])
+
+    def test_cancel_reconciles_a_unit_that_stops_during_the_wait(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "root"
+            paths = ServerPaths.from_root(root)
+            paths.create()
+            workspace = Path(temporary) / "workspace"
+            workspace.mkdir()
+            spec = JobSpec(
+                job_id="stopping-job",
+                repository="trie-space",
+                workspace=str(workspace),
+                workspaces={"primary": str(workspace)},
+                includes={},
+                weight="light",
+                argv=("true",),
+                created_at="2026-08-24T00:00:00+00:00",
+            )
+            store = JobStore(paths)
+            store.create(spec)
+            store.transition("stopping-job", "queued", unit="trie-job-stopping-job")
+            store.transition("stopping-job", "running")
+            active = subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout="LoadState=loaded\nActiveState=active\n",
+            )
+            inactive = subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout="LoadState=not-found\nActiveState=inactive\n",
+            )
+            environment = {
+                "REMOTE_RUNNER_ROOT": str(root),
+                "REMOTE_RUNNER_ALLOWED_REPOSITORIES": "trie-space",
+            }
+            output = StringIO()
+            with (
+                patch.dict(os.environ, environment, clear=True),
+                patch(
+                    "trie_remote.server_cli.subprocess.run",
+                    side_effect=[active, inactive],
+                ) as run,
+                patch("trie_remote.server_cli.time.monotonic", side_effect=[0, 21]),
+                patch("trie_remote.server_cli.time.sleep") as sleep,
+                redirect_stdout(output),
+            ):
+                result = server_main(["cancel", "stopping-job"])
+
+            self.assertEqual(result, 0)
+            self.assertEqual(store.status("stopping-job")["state"], "cancelled")
+            self.assertEqual(json.loads(output.getvalue())["exit_code"], 127)
+            self.assertTrue(
+                (store.job_directory("stopping-job") / "cancel.requested").exists(),
+            )
+            self.assertEqual(run.call_count, 2)
+            sleep.assert_not_called()
+
+    def test_cancel_keeps_the_kill_path_when_unit_state_is_inconclusive(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "root"
+            paths = ServerPaths.from_root(root)
+            paths.create()
+            workspace = Path(temporary) / "workspace"
+            workspace.mkdir()
+            spec = JobSpec(
+                job_id="query-timeout",
+                repository="trie-space",
+                workspace=str(workspace),
+                workspaces={"primary": str(workspace)},
+                includes={},
+                weight="light",
+                argv=("true",),
+                created_at="2026-08-24T00:00:00+00:00",
+            )
+            store = JobStore(paths)
+            store.create(spec)
+            store.transition("query-timeout", "queued", unit="trie-job-query-timeout")
+            store.transition("query-timeout", "running")
+            timeout = subprocess.TimeoutExpired("systemctl", 5)
+            killed = subprocess.CompletedProcess(args=[], returncode=0)
+            environment = {
+                "REMOTE_RUNNER_ROOT": str(root),
+                "REMOTE_RUNNER_ALLOWED_REPOSITORIES": "trie-space",
+            }
+            output = StringIO()
+            with (
+                patch.dict(os.environ, environment, clear=True),
+                patch(
+                    "trie_remote.server_cli.subprocess.run",
+                    side_effect=[timeout, timeout, killed],
+                ) as run,
+                patch("trie_remote.server_cli.time.monotonic", side_effect=[0, 21]),
+                patch("trie_remote.server_cli.time.sleep") as sleep,
+                redirect_stdout(output),
+            ):
+                result = server_main(["cancel", "query-timeout"])
+
+            self.assertEqual(result, 0)
+            self.assertEqual(store.status("query-timeout")["state"], "running")
+            self.assertEqual(
+                json.loads(output.getvalue())["state"],
+                "cancellation-requested",
+            )
+            self.assertTrue(
+                (store.job_directory("query-timeout") / "cancel.requested").exists(),
+            )
+            self.assertEqual(run.call_count, 3)
+            self.assertIn("kill", run.call_args.args[0])
+            sleep.assert_not_called()
+
+    def test_cancel_keeps_the_kill_path_for_an_active_unit(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "root"
+            paths = ServerPaths.from_root(root)
+            paths.create()
+            workspace = Path(temporary) / "workspace"
+            workspace.mkdir()
+            spec = JobSpec(
+                job_id="active-job",
+                repository="trie-space",
+                workspace=str(workspace),
+                workspaces={"primary": str(workspace)},
+                includes={},
+                weight="light",
+                argv=("true",),
+                created_at="2026-08-24T00:00:00+00:00",
+            )
+            store = JobStore(paths)
+            store.create(spec)
+            store.transition("active-job", "queued", unit="trie-job-active-job")
+            store.transition("active-job", "running")
+            active = subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout="LoadState=loaded\nActiveState=activating\n",
+            )
+            killed = subprocess.CompletedProcess(args=[], returncode=0)
+            environment = {
+                "REMOTE_RUNNER_ROOT": str(root),
+                "REMOTE_RUNNER_ALLOWED_REPOSITORIES": "trie-space",
+            }
+            output = StringIO()
+            with (
+                patch.dict(os.environ, environment, clear=True),
+                patch(
+                    "trie_remote.server_cli.subprocess.run",
+                    side_effect=[active, active, killed],
+                ) as run,
+                patch("trie_remote.server_cli.time.monotonic", side_effect=[0, 21]),
+                patch("trie_remote.server_cli.time.sleep") as sleep,
+                redirect_stdout(output),
+            ):
+                result = server_main(["cancel", "active-job"])
+
+            self.assertEqual(result, 0)
+            self.assertEqual(store.status("active-job")["state"], "running")
+            self.assertEqual(
+                json.loads(output.getvalue())["state"],
+                "cancellation-requested",
+            )
+            self.assertTrue(
+                (store.job_directory("active-job") / "cancel.requested").exists(),
+            )
+            self.assertEqual(run.call_count, 3)
+            self.assertIn("kill", run.call_args.args[0])
+            sleep.assert_not_called()
 
     def test_cleanup_checks_preview_ownership_before_docker_mutation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

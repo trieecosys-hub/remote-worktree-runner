@@ -50,14 +50,24 @@ def run_job(
         store.transition(job_id, "running", pid=os.getpid(), started_at=time.time())
         cancellation = store.job_directory(job_id) / "cancel.requested"
         with store.log_path(job_id).open("ab", buffering=0) as log:
-            process = subprocess.Popen(
-                list(spec.argv),
-                cwd=Path(spec.workspace),
-                env=environment,
-                stdout=log,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-            )
+            try:
+                process = subprocess.Popen(
+                    list(spec.argv),
+                    cwd=Path(spec.workspace),
+                    env=environment,
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                )
+            except OSError as error:
+                detail = error.strerror or "operating system error"
+                message = (
+                    f"[trie-runner] command spawn failed: "
+                    f"{type(error).__name__}: {detail}\n"
+                )
+                log.write(message.encode("utf-8", errors="replace"))
+                store.finish(job_id, 127)
+                return 127
             warned = False
             while process.poll() is None:
                 if cancellation.exists() or guard.monitor(paths.root) == "cancel":

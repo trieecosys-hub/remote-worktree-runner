@@ -17,13 +17,69 @@ from trie_remote.common import ensure_below, validate_identifier
 from trie_remote.config import RunnerConfig
 from trie_remote.docker_policy import validate_docker_arguments
 from trie_remote.job_environment import cleanup_job_builder, job_resource_name
-from trie_remote.job_store import FINAL_STATES, JobSpec, JobStore
+from trie_remote.job_store import FINAL_STATES, JobSpec, JobStore, utc_now
 from trie_remote.job_worker import run_job
 from trie_remote.port_policy import validate_compose_command
 from trie_remote.preview_registry import PreviewRegistry
 from trie_remote.scheduler import DiskGuard
 from trie_remote.server_paths import ServerPaths
 from trie_remote.server_workspace import ensure_bare_repository, prepare_workspace
+
+
+def _unit_is_inactive(unit: str) -> bool:
+    """Return whether systemd confirms that a worker unit cannot be running."""
+    try:
+        result = subprocess.run(
+            [
+                "systemctl",
+                "--user",
+                "show",
+                unit,
+                "--property=LoadState",
+                "--property=ActiveState",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    properties = {}
+    for line in result.stdout.splitlines():
+        key, separator, value = line.partition("=")
+        if separator:
+            properties[key] = value
+    return properties.get("LoadState") == "not-found" or properties.get(
+        "ActiveState",
+    ) in {"inactive", "failed"}
+
+
+def _reconcile_inactive_unit(
+    store: JobStore,
+    job_id: str,
+    status: dict[str, object],
+) -> dict[str, object] | None:
+    """Finalize a non-final job whose transient worker unit is gone."""
+    unit = str(status.get("unit", f"trie-job-{job_id}"))
+    if not _unit_is_inactive(unit):
+        return None
+    latest = store.status(job_id)
+    if latest["state"] in FINAL_STATES:
+        return latest
+    try:
+        return store.transition(
+            job_id,
+            "cancelled",
+            exit_code=127,
+            reason="worker unit is no longer active",
+            finished_at=utc_now(),
+        )
+    except ValueError:
+        latest = store.status(job_id)
+        if latest["state"] in FINAL_STATES:
+            return latest
+        raise
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -273,6 +329,10 @@ def main(argv: list[str] | None = None) -> int:
         if status["state"] in FINAL_STATES:
             print(json.dumps(status, sort_keys=True))
             return 0
+        reconciled = _reconcile_inactive_unit(store, arguments.job, status)
+        if reconciled is not None:
+            print(json.dumps(reconciled, sort_keys=True))
+            return 0
         store.request_cancel(arguments.job)
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline:
@@ -281,6 +341,10 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps(status, sort_keys=True))
                 return 0
             time.sleep(1)
+        reconciled = _reconcile_inactive_unit(store, arguments.job, status)
+        if reconciled is not None:
+            print(json.dumps(reconciled, sort_keys=True))
+            return 0
         unit = str(status.get("unit", f"trie-job-{arguments.job}"))
         subprocess.run(
             ["systemctl", "--user", "kill", "--signal=SIGTERM", unit],
