@@ -1,6 +1,8 @@
 """Static contract tests for the remote development gateway."""
 
 from pathlib import Path
+import os
+import subprocess
 import unittest
 
 
@@ -66,6 +68,84 @@ class GatewayAssetTests(unittest.TestCase):
         gitignore = (REPOSITORY_ROOT / ".gitignore").read_text()
 
         self.assertIn("gateway/dynamic/", gitignore.splitlines())
+
+
+class GatewayInstallerTests(unittest.TestCase):
+    """Verify the gateway installer rejects unsafe deployment parameters."""
+
+    def setUp(self) -> None:
+        self.script = REPOSITORY_ROOT / "install" / "install-gateway.sh"
+
+    def run_installer(self, *arguments: str) -> subprocess.CompletedProcess[str]:
+        """Run the installer without contacting a remote host."""
+        environment = os.environ.copy()
+        environment["DEPLOYMENT_PASSWORD"] = "must-not-appear"
+        return subprocess.run(
+            [self.script, *arguments, "--dry-run"],
+            cwd=REPOSITORY_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+
+    def test_dry_run_is_deterministic_and_secret_safe(self) -> None:
+        arguments = (
+            "--host",
+            "remote-docker",
+            "--remote-root",
+            "/srv/remote-worktree-runner",
+            "--bind-host",
+            "127.0.0.1",
+            "--bind-port",
+            "18080",
+            "--project-name",
+            "remote-worktree-runner-gateway",
+            "--network-name",
+            "remote-worktree-runner-edge",
+        )
+
+        first = self.run_installer(*arguments)
+        second = self.run_installer(*arguments)
+
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertEqual(first.stdout, second.stdout)
+        self.assertIn("target: remote-docker:/srv/remote-worktree-runner", first.stdout)
+        self.assertIn("endpoint: http://127.0.0.1:18080", first.stdout)
+        self.assertIn(f"image: {EXPECTED_IMAGE}", first.stdout)
+        self.assertNotIn("must-not-appear", first.stdout + first.stderr)
+
+    def test_rejects_non_loopback_bind_and_invalid_port(self) -> None:
+        for arguments in (
+            ("--bind-host", "0.0.0.0"),
+            ("--bind-port", "80"),
+            ("--bind-port", "70000"),
+            ("--bind-port", "not-a-port"),
+        ):
+            with self.subTest(arguments=arguments):
+                result = self.run_installer(*arguments)
+                self.assertEqual(result.returncode, 2)
+
+    def test_rejects_shell_input_in_names_and_remote_root(self) -> None:
+        for arguments in (
+            ("--host", "remote;touch"),
+            ("--remote-root", "/srv/../tmp"),
+            ("--remote-root", "srv/runner"),
+            ("--project-name", "Bad_Project"),
+            ("--network-name", "edge;touch"),
+        ):
+            with self.subTest(arguments=arguments):
+                result = self.run_installer(*arguments)
+                self.assertEqual(result.returncode, 2)
+
+    def test_installer_requires_an_immutable_image(self) -> None:
+        content = self.script.read_text()
+
+        self.assertIn("TRAEFIK_IMAGE", content)
+        self.assertIn("@sha256:", content)
+        self.assertIn("set -euo pipefail", content)
+        self.assertNotIn("set -x", content)
+        self.assertNotIn("printenv", content)
 
 
 if __name__ == "__main__":
