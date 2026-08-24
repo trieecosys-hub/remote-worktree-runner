@@ -148,5 +148,46 @@ class GatewayInstallerTests(unittest.TestCase):
         self.assertNotIn("printenv", content)
 
 
+class GatewayVerifierTests(unittest.TestCase):
+    """Verify remote checks cover gateway health, isolation, and hot reload."""
+
+    def setUp(self) -> None:
+        self.script = REPOSITORY_ROOT / "scripts" / "verify-gateway.sh"
+
+    def test_verifier_checks_runtime_hardening(self) -> None:
+        content = self.script.read_text()
+
+        self.assertIn(".State.Health.Status", content)
+        self.assertIn(".HostConfig.ReadonlyRootfs", content)
+        self.assertIn(".HostConfig.CapDrop", content)
+        self.assertIn(".HostConfig.RestartPolicy.Name", content)
+        self.assertIn("docker.sock", content)
+        self.assertIn("docker network inspect", content)
+        self.assertIn("ss -H -ltn", content)
+        self.assertIn("127.0.0.1", content)
+
+    def test_verifier_checks_empty_gateway_and_dynamic_route_reload(self) -> None:
+        content = self.script.read_text()
+
+        self.assertIn("gateway-check.invalid", content)
+        self.assertIn("http://127.0.0.1:8082", content)
+        self.assertIn("mv ", content)
+        self.assertIn("HTTP 404", content)
+        self.assertIn("HTTP 200", content)
+        self.assertIn("trap cleanup", content)
+        self.assertIn("route_reload", content)
+        self.assertNotIn("docker compose restart", content)
+        self.assertNotIn("docker compose down", content)
+
+    def test_verifier_uses_scoped_diagnostics_and_strict_validation(self) -> None:
+        content = self.script.read_text()
+
+        self.assertIn("set -euo pipefail", content)
+        self.assertIn("docker compose", content)
+        self.assertIn("logs --tail", content)
+        self.assertNotIn("docker logs $(docker ps", content)
+        self.assertNotIn("printenv", content)
+
+
 if __name__ == "__main__":
     unittest.main()
