@@ -47,3 +47,31 @@ A filesystem lock admits one heavy job at a time. Default thresholds require 100
 ## Multi-worktree jobs
 
 `--include role=/absolute/local/path` synchronizes another worktree at its exact commit and exposes the remote path as `TRIE_<ROLE>_ROOT`. This supports integration and certification suites spanning multiple repositories without merging their local branches.
+
+## Traefik development gateway
+
+The gateway is a long-lived Compose project beside the transient runner jobs:
+
+```text
+Cloudflare Tunnel or server-local HTTP client
+  |  http://127.0.0.1:18080
+  v
+Traefik gateway
+  |  exact hostname rules from the file provider
+  v
+remote-worktree-runner-edge network
+  |
+  +-- product web service
+  +-- product API service
+```
+
+Static assets live in the repository. The installer copies them to
+`services/gateway` under the selected remote root and preserves
+`gateway/dynamic` across reinstalls. Traefik watches that directory, so route
+files can be added and removed atomically without restarting the gateway.
+
+Traefik intentionally does not use its Docker provider. Product deployment
+logic owns service discovery and writes an explicit hostname-to-service route
+only after the target container is available on `remote-worktree-runner-edge`.
+The gateway initially has no product route and returns HTTP 404 for unmatched
+requests.

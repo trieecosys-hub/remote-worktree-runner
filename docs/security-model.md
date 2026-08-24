@@ -16,6 +16,17 @@ Remote Worktree Runner assumes the local operator, selected repository code, rem
 - Published ports are checked against existing Compose project ownership.
 - Cleanup targets recorded job resources and requires an explicit flag to remove named volumes.
 - Toolchain downloads are pinned and verified against publisher checksums or repository-pinned SHA-256 values.
+- The optional Traefik gateway publishes only a loopback listener. It runs with
+  a read-only root filesystem, all Linux capabilities dropped, and
+  `no-new-privileges` enabled.
+- The gateway does not mount the Docker socket. It uses a read-only file
+  provider, and its API, dashboard, and private health entrypoint are not
+  published.
+- Cloudflare Tunnel is the intended public HTTP boundary. Exact hostname rules
+  should reach the single loopback gateway origin, while SSH remains a separate
+  access-controlled route.
+- Product databases, caches, message brokers, and the Docker daemon must remain
+  private and must not receive public gateway routes.
 
 ## Residual risks
 
@@ -24,5 +35,10 @@ Remote Worktree Runner assumes the local operator, selected repository code, rem
 - SSH host verification, Cloudflare Access policy, Unix account hardening, Docker daemon security, backups, and network firewalls are operator responsibilities.
 - Shared language and browser caches improve performance but are not suitable across mutually hostile tenants.
 - Native `linux/amd64` verification does not prove behavior on ARM64 or another operating system.
+- Containers attached to the shared gateway edge network can exchange traffic.
+  Only trusted development workloads should join that network.
+- A malformed dynamic route can expose the wrong HTTP service through
+  Cloudflare Tunnel. Route generation and hostname ownership remain operator
+  responsibilities.
 
 Use a dedicated server account and host for untrusted or multi-tenant workloads.

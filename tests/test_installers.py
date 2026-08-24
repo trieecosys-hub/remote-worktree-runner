@@ -129,6 +129,31 @@ class InstallerTests(unittest.TestCase):
         self.assertIn("bash -n install/*.sh bin/* scripts/*.sh", workflow)
         self.assertIn("install/build-zipapp.sh", workflow)
 
+    def test_gateway_public_documentation_contract(self) -> None:
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        architecture = (ROOT / "docs" / "architecture.md").read_text(
+            encoding="utf-8",
+        )
+        security = (ROOT / "docs" / "security-model.md").read_text(
+            encoding="utf-8",
+        )
+
+        self.assertIn("install/install-gateway.sh", readme)
+        self.assertIn("scripts/verify-gateway.sh", readme)
+        self.assertIn("127.0.0.1:18080", readme)
+        self.assertIn("healthy gateway starts with no product routes", readme)
+        self.assertIn("/srv/remote-worktree-runner/services/gateway", readme)
+
+        self.assertIn("Traefik development gateway", architecture)
+        self.assertIn("file provider", architecture)
+        self.assertIn("remote-worktree-runner-edge", architecture)
+        self.assertIn("gateway/dynamic", architecture)
+
+        self.assertIn("does not mount the Docker socket", security)
+        self.assertIn("loopback", security)
+        self.assertIn("Cloudflare Tunnel", security)
+        self.assertIn("databases", security)
+
 
 if __name__ == "__main__":
     unittest.main()

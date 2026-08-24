@@ -76,6 +76,41 @@ Verify connectivity:
 trie-run doctor --show-sync
 ```
 
+## Install the development gateway
+
+The optional Traefik gateway gives Cloudflare Tunnel and workstation HTTP
+clients one stable origin while product containers continue to use private
+Docker networks. Preview the deployment first:
+
+```bash
+install/install-gateway.sh \
+  --host remote-docker \
+  --remote-root /srv/remote-worktree-runner \
+  --dry-run
+```
+
+Install and verify it:
+
+```bash
+install/install-gateway.sh \
+  --host remote-docker \
+  --remote-root /srv/remote-worktree-runner
+
+scripts/verify-gateway.sh \
+  --host remote-docker \
+  --remote-root /srv/remote-worktree-runner
+```
+
+The gateway binds only to `127.0.0.1:18080`. Its persistent files are stored
+under `/srv/remote-worktree-runner/services/gateway`, including the live
+`dynamic/` route directory. A healthy gateway starts with no product routes,
+so an unmatched request returns HTTP 404. Product deployment tooling can later
+write exact-host routes into that directory without restarting Traefik.
+
+For Cloudflare Tunnel, create one HTTP published application origin that points
+to `http://127.0.0.1:18080` on the server. Keep SSH as its separate TCP route.
+Do not publish product databases, queues, or the Traefik health entrypoint.
+
 ## Run and reconnect
 
 Run from the exact worktree being edited:
@@ -108,6 +143,8 @@ trie-run run --job integration-01 --weight heavy \
 - Commands are transported as JSON argument arrays, not reconstructed shell strings.
 - Daemon-wide Docker prune and restart operations are rejected.
 - Cleanup targets the exact job and preserves named volumes unless `--volumes` is explicit.
+- The optional gateway is loopback-only, has no dashboard, and does not access
+  the Docker socket.
 - The remote Unix account and Docker daemon remain trusted components.
 
 See [architecture](docs/architecture.md) and [security model](docs/security-model.md) for details.
