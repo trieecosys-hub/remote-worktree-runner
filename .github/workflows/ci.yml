@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Run unit tests
+        env:
+          PYTHONPATH: src
+        run: python3 -u -m unittest discover -s tests -v
+      - name: Check shell syntax
+        run: bash -n install/*.sh bin/* scripts/*.sh
+      - name: Verify deterministic zipapp
+        run: |
+          install/build-zipapp.sh
+          cp dist/trie-remote.pyz /tmp/trie-remote-first.pyz
+          sleep 2.1
+          install/build-zipapp.sh
+          cmp /tmp/trie-remote-first.pyz dist/trie-remote.pyz
+      - name: Check whitespace
+        run: git diff --check

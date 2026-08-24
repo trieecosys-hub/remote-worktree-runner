@@ -1,0 +1,16 @@
+.worktrees/
+.DS_Store
+.env
+.env.*
+!.env.example
+.secrets/
+*.key
+*.pem
+*.p12
+*.pfx
+*.token
+*.local
+*.log
+dist/
+__pycache__/
+*.py[cod]

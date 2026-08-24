@@ -1,0 +1,132 @@
+# Remote Worktree Runner
+
+Keep source code and Git state on your workstation while Docker-heavy builds and tests run on a remote Linux server over SSH.
+
+Remote Worktree Runner transfers the exact local commit plus tracked modifications, deletions, and untracked files. It creates an isolated remote worktree, Docker configuration, Buildx builder, Compose namespace, cache, log, and persistent systemd user job for each run. Closing the terminal does not stop the job.
+
+## Why
+
+- Recover laptop disk space without moving the source of truth off the workstation.
+- Keep the normal editing, review, and version-control workflow on the workstation.
+- Run Docker, Compose, Buildx, Kind, integration tests, and E2E suites on native `linux/amd64` infrastructure.
+- Reconnect to long-running jobs after SSH or the local terminal disconnects.
+- Prevent one job from pruning or overwriting another job's Docker resources.
+- Combine multiple local worktrees in one remote certification command.
+
+## Requirements
+
+Client:
+
+- macOS or Linux
+- Python 3.10+
+- Git, OpenSSH, rsync, and an SSH alias that reaches the server
+
+Server:
+
+- Ubuntu or another systemd-based Linux distribution
+- Docker Engine with Compose and Buildx
+- A non-root Unix account with access to Docker and user systemd services
+- Enough disk for the configured admission thresholds
+
+Cloudflare Access is optional. If used, configure it entirely in the SSH alias, for example:
+
+```sshconfig
+Host remote-docker
+  HostName ssh.example.com
+  User runner
+  ProxyCommand cloudflared access ssh --hostname %h
+```
+
+## Install
+
+Clone this repository, then preview both installers:
+
+```bash
+install/install-local.sh --dry-run
+install/install-server.sh \
+  --host remote-docker \
+  --remote-root /srv/remote-worktree-runner \
+  --repositories remote-worktree-runner,example-api \
+  --dry-run
+```
+
+Install the local CLI and the server runner:
+
+```bash
+install/install-local.sh
+install/install-server.sh \
+  --host remote-docker \
+  --remote-root /srv/remote-worktree-runner \
+  --repositories remote-worktree-runner,example-api
+```
+
+Configure the client shell to match the server installation:
+
+```bash
+export REMOTE_RUNNER_SSH_ALIAS=remote-docker
+export REMOTE_RUNNER_ROOT=/srv/remote-worktree-runner
+export REMOTE_RUNNER_ALLOWED_REPOSITORIES=remote-worktree-runner,example-api
+```
+
+Legacy `TRIE_REMOTE_*` variables remain supported. Public `REMOTE_RUNNER_*` names take precedence.
+
+Verify connectivity:
+
+```bash
+trie-run doctor --show-sync
+```
+
+## Run and reconnect
+
+Run from the exact worktree being edited:
+
+```bash
+trie-run run --job api-check-01 --weight heavy -- \
+  bash -lc 'docker compose build && docker compose run --rm api-tests'
+
+trie-run status api-check-01
+trie-run logs -f api-check-01
+trie-run cancel api-check-01
+trie-run cleanup api-check-01
+```
+
+Job IDs contain lowercase letters, numbers, and hyphens and are at most 63 characters. They are immutable; use a new ID for every run.
+
+For a command that needs another worktree:
+
+```bash
+trie-run run --job integration-01 --weight heavy \
+  --include worker=/absolute/path/to/worker-worktree -- \
+  bash -lc 'test -d "$TRIE_WORKER_ROOT" && ./scripts/integration.sh'
+```
+
+## Safety model
+
+- Only one heavy job is admitted at a time.
+- Heavy jobs require 100 GiB free by default. Workers warn below 80 GiB and cancel below 60 GiB.
+- Repository names and server paths are validated before use.
+- Commands are transported as JSON argument arrays, not reconstructed shell strings.
+- Daemon-wide Docker prune and restart operations are rejected.
+- Cleanup targets the exact job and preserves named volumes unless `--volumes` is explicit.
+- The remote Unix account and Docker daemon remain trusted components.
+
+See [architecture](docs/architecture.md) and [security model](docs/security-model.md) for details.
+
+## Development
+
+```bash
+PYTHONPATH=src python3 -u -m unittest discover -s tests -v
+bash -n install/*.sh bin/* scripts/*.sh
+install/build-zipapp.sh
+git diff --check
+```
+
+The implementation has no runtime Python dependencies outside the standard library. Downloaded server tools are version-pinned and checksum-verified.
+
+## Compatibility note
+
+The `trie-run`, `trie-runner`, `trie_remote`, and `/srv/trie-platform` defaults are retained for compatibility with the original deployment. They are names, not dependencies on a Trie product. New installations should pass an explicit host, root, and repository allowlist as shown above.
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE).

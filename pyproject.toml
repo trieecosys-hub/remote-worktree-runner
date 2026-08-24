@@ -1,0 +1,9 @@
+[project]
+name = "remote-worktree-runner"
+version = "0.1.0"
+description = "Run Docker-heavy jobs on a remote server from an exact local Git worktree"
+readme = "README.md"
+requires-python = ">=3.10"
+
+[tool.unittest]
+start-directory = "tests"
