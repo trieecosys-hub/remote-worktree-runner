@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import asdict
 import json
 import os
 from pathlib import Path
@@ -19,6 +20,7 @@ from trie_remote.job_environment import cleanup_job_builder, job_resource_name
 from trie_remote.job_store import FINAL_STATES, JobSpec, JobStore
 from trie_remote.job_worker import run_job
 from trie_remote.port_policy import validate_compose_command
+from trie_remote.preview_registry import PreviewRegistry
 from trie_remote.scheduler import DiskGuard
 from trie_remote.server_paths import ServerPaths
 from trie_remote.server_workspace import ensure_bare_repository, prepare_workspace
@@ -65,6 +67,18 @@ def build_parser() -> argparse.ArgumentParser:
     cleanup_parser = subparsers.add_parser("cleanup")
     cleanup_parser.add_argument("job")
     cleanup_parser.add_argument("--volumes", action="store_true")
+
+    preview_publish_parser = subparsers.add_parser("preview-publish")
+    preview_publish_parser.add_argument("--job", required=True)
+    preview_publish_parser.add_argument("--slot", required=True)
+    preview_publish_parser.add_argument("--project", required=True)
+    preview_publish_parser.add_argument("--service", required=True)
+    preview_publish_parser.add_argument("--port", required=True, type=int)
+    preview_publish_parser.add_argument("--check-path", required=True)
+    subparsers.add_parser("preview-list")
+    preview_unpublish_parser = subparsers.add_parser("preview-unpublish")
+    preview_unpublish_parser.add_argument("--job", required=True)
+    preview_unpublish_parser.add_argument("--slot", required=True)
     subparsers.add_parser("doctor")
     return parser
 
@@ -81,6 +95,28 @@ def main(argv: list[str] | None = None) -> int:
     paths = ServerPaths.from_root(config.remote_root)
     paths.create()
     store = JobStore(paths)
+    if arguments.command == "preview-publish":
+        route = PreviewRegistry(paths).publish(
+            job_id=arguments.job,
+            slot=arguments.slot,
+            project=arguments.project,
+            service=arguments.service,
+            port=arguments.port,
+            check_path=arguments.check_path,
+        )
+        print(json.dumps(asdict(route), sort_keys=True))
+        return 0
+
+    if arguments.command == "preview-list":
+        routes = PreviewRegistry(paths).list()
+        print(json.dumps([asdict(route) for route in routes], sort_keys=True))
+        return 0
+
+    if arguments.command == "preview-unpublish":
+        route = PreviewRegistry(paths).unpublish(arguments.job, arguments.slot)
+        print(json.dumps(asdict(route), sort_keys=True))
+        return 0
+
     if arguments.command == "ensure-repo":
         mirror = ensure_bare_repository(paths, arguments.repository)
         print(json.dumps({"repository": arguments.repository, "mirror": str(mirror)}))
@@ -258,6 +294,7 @@ def main(argv: list[str] | None = None) -> int:
         status = store.status(arguments.job)
         if status["state"] not in FINAL_STATES:
             raise ValueError("only a final job can be cleaned")
+        PreviewRegistry(paths).assert_cleanup_allowed(spec.job_id)
         resource = job_resource_name(spec.repository, spec.job_id)
         project_file = store.job_directory(spec.job_id) / "compose-projects.json"
         projects = [resource]

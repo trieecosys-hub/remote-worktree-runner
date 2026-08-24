@@ -39,6 +39,15 @@ class EntrypointTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("trie-runner", result.stdout)
 
+    def test_preview_help_is_available_on_both_entrypoints(self) -> None:
+        local = run_module("local", "preview", "--help")
+        server = run_module("server", "preview-publish", "--help")
+
+        self.assertEqual(local.returncode, 0, local.stderr)
+        self.assertIn("{publish,list,unpublish}", local.stdout)
+        self.assertEqual(server.returncode, 0, server.stderr)
+        self.assertIn("--check-path", server.stdout)
+
     def test_missing_mode_is_a_usage_error(self) -> None:
         result = run_module()
 

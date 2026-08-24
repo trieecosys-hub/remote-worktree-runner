@@ -43,6 +43,23 @@ def build_parser() -> argparse.ArgumentParser:
     cleanup_parser.add_argument("job")
     cleanup_parser.add_argument("--volumes", action="store_true")
 
+    preview_parser = subparsers.add_parser("preview")
+    preview_subparsers = preview_parser.add_subparsers(
+        dest="preview_command",
+        required=True,
+    )
+    publish_parser = preview_subparsers.add_parser("publish")
+    publish_parser.add_argument("--job", required=True)
+    publish_parser.add_argument("--slot", required=True)
+    publish_parser.add_argument("--project", required=True)
+    publish_parser.add_argument("--service", required=True)
+    publish_parser.add_argument("--port", required=True, type=int)
+    publish_parser.add_argument("--check-path", required=True)
+    preview_subparsers.add_parser("list")
+    unpublish_parser = preview_subparsers.add_parser("unpublish")
+    unpublish_parser.add_argument("--job", required=True)
+    unpublish_parser.add_argument("--slot", required=True)
+
     doctor_parser = subparsers.add_parser("doctor")
     doctor_parser.add_argument("--show-sync", action="store_true")
     return parser
@@ -166,6 +183,37 @@ def _doctor(config: RunnerConfig, transport: Transport, show_sync: bool) -> int:
     return 0 if all(local.values()) and result.returncode == 0 else 1
 
 
+def _preview(arguments: argparse.Namespace, transport: Transport) -> int:
+    """Forward one preview operation to the remote registry."""
+    remote_arguments = [f"preview-{arguments.preview_command}"]
+    if arguments.preview_command == "publish":
+        remote_arguments.extend(
+            [
+                "--job",
+                arguments.job,
+                "--slot",
+                arguments.slot,
+                "--project",
+                arguments.project,
+                "--service",
+                arguments.service,
+                "--port",
+                str(arguments.port),
+                "--check-path",
+                arguments.check_path,
+            ],
+        )
+    elif arguments.preview_command == "unpublish":
+        remote_arguments.extend(
+            ["--job", arguments.job, "--slot", arguments.slot],
+        )
+    result = transport.ssh(remote_arguments)
+    if result.stdout:
+        output = result.stdout.decode() if isinstance(result.stdout, bytes) else result.stdout
+        print(output, end="" if output.endswith("\n") else "\n")
+    return int(result.returncode)
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run the local CLI."""
     parser = build_parser()
@@ -190,6 +238,8 @@ def main(argv: list[str] | None = None) -> int:
             )
         if arguments.command == "doctor":
             return _doctor(config, transport, arguments.show_sync)
+        if arguments.command == "preview":
+            return _preview(arguments, transport)
         validate_identifier(arguments.job, "job")
         remote_arguments = [arguments.command]
         if arguments.command == "logs" and arguments.follow:
