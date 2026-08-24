@@ -147,6 +147,12 @@ class GatewayInstallerTests(unittest.TestCase):
         self.assertNotIn("set -x", content)
         self.assertNotIn("printenv", content)
 
+    def test_installer_uses_macos_compatible_rsync_flags(self) -> None:
+        content = self.script.read_text()
+
+        self.assertIn("rsync -a", content)
+        self.assertNotIn("--chmod", content)
+
 
 class GatewayVerifierTests(unittest.TestCase):
     """Verify remote checks cover gateway health, isolation, and hot reload."""

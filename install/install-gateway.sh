@@ -110,7 +110,7 @@ REMOTE_CLEANUP
 }
 trap cleanup EXIT
 
-rsync -a --chmod=F0644 \
+rsync -a \
   "$repository_root/gateway/compose.yaml" \
   "$repository_root/gateway/traefik-static.yaml" \
   "$host:$remote_stage/"
