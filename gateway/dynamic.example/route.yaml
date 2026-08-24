@@ -1,0 +1,12 @@
+http:
+  routers:
+    example:
+      entryPoints:
+        - web
+      rule: "Host(`app.example.com`)"
+      service: example
+  services:
+    example:
+      loadBalancer:
+        servers:
+          - url: "http://example-service:8080"

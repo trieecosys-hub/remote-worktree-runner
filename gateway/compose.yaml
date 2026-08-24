@@ -1,0 +1,29 @@
+services:
+  traefik:
+    image: ${TRAEFIK_IMAGE:?TRAEFIK_IMAGE is required}
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    ports:
+      - "${GATEWAY_BIND_HOST:-127.0.0.1}:${GATEWAY_BIND_PORT:-18080}:8080"
+    volumes:
+      - ./traefik-static.yaml:/etc/traefik/traefik.yaml:ro
+      - ./dynamic:/etc/traefik/dynamic:ro
+    networks:
+      - edge
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 5s
+
+networks:
+  edge:
+    name: ${GATEWAY_EDGE_NETWORK:-remote-worktree-runner-edge}
+    external: true
