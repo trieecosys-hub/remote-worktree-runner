@@ -49,6 +49,7 @@ class RunnerConfigTests(unittest.TestCase):
         self.assertEqual(config.ssh_alias, "trie-docker")
         self.assertEqual(config.remote_root, Path("/srv/trie-platform"))
         self.assertEqual(config.minimum_free_gib, 100)
+        self.assertEqual(config.max_heavy_jobs, 1)
         self.assertIn("trie-space", config.allowed_repositories)
 
     def test_environment_can_override_non_secret_locations(self) -> None:
@@ -79,6 +80,17 @@ class RunnerConfigTests(unittest.TestCase):
             Path("/srv/remote-worktree-runner"),
         )
         self.assertEqual(config.allowed_repositories, frozenset({"api", "frontend"}))
+
+    def test_max_heavy_jobs_requires_a_positive_integer(self) -> None:
+        config = RunnerConfig.load({"REMOTE_RUNNER_MAX_HEAVY_JOBS": "3"})
+
+        self.assertEqual(config.max_heavy_jobs, 3)
+        for value in ("0", "-1"):
+            with self.subTest(value=value), self.assertRaisesRegex(
+                ValueError,
+                "max heavy jobs must be positive",
+            ):
+                RunnerConfig.load({"REMOTE_RUNNER_MAX_HEAVY_JOBS": value})
 
 
 if __name__ == "__main__":

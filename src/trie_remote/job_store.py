@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 import json
 import os
@@ -28,6 +28,22 @@ def utc_now() -> str:
 
 
 @dataclass(frozen=True, slots=True)
+class OverlayManifest:
+    """Repository-relative file changes applied above one exact commit."""
+
+    transfer: tuple[str, ...] = ()
+    delete: tuple[str, ...] = ()
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> "OverlayManifest":
+        """Build a manifest from JSON-compatible values."""
+        return cls(
+            transfer=tuple(str(path) for path in value.get("transfer", ())),
+            delete=tuple(str(path) for path in value.get("delete", ())),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class JobSpec:
     """Serializable description of one remote command."""
 
@@ -39,23 +55,33 @@ class JobSpec:
     weight: str
     argv: tuple[str, ...]
     created_at: str
+    overlays: Mapping[str, OverlayManifest] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         validate_identifier(self.job_id, "job")
         validate_identifier(self.repository, "repository")
-        if self.weight not in {"light", "heavy"}:
-            raise ValueError("weight must be light or heavy")
+        if self.weight not in {"light", "heavy", "exclusive"}:
+            raise ValueError("weight must be light, heavy, or exclusive")
         if not self.argv or not all(
             isinstance(value, str) and value for value in self.argv
         ):
             raise ValueError("argv must contain non-empty strings")
         for role in self.workspaces:
             validate_identifier(role, "role")
+        if not set(self.overlays).issubset(self.workspaces):
+            raise ValueError("overlay roles must match workspaces")
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-compatible representation."""
         value = asdict(self)
         value["argv"] = list(self.argv)
+        value["overlays"] = {
+            role: {
+                "transfer": list(manifest.transfer),
+                "delete": list(manifest.delete),
+            }
+            for role, manifest in self.overlays.items()
+        }
         return value
 
     @classmethod
@@ -72,6 +98,10 @@ class JobSpec:
             weight=str(value["weight"]),
             argv=tuple(str(item) for item in value["argv"]),
             created_at=str(value.get("created_at") or utc_now()),
+            overlays={
+                str(role): OverlayManifest.from_dict(dict(manifest))
+                for role, manifest in dict(value.get("overlays", {})).items()
+            },
         )
 
 

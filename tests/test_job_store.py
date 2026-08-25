@@ -7,11 +7,49 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from trie_remote.job_store import JobSpec, JobStore
+from trie_remote.job_store import JobSpec, JobStore, OverlayManifest
 from trie_remote.server_paths import ServerPaths
 
 
 class JobStoreTests(unittest.TestCase):
+    def test_job_spec_round_trips_exclusive_weight_and_overlays(self) -> None:
+        spec = JobSpec(
+            job_id="exclusive-job",
+            repository="trie-space",
+            workspace="/srv/trie-platform/workspaces/trie-space/exclusive-job/primary",
+            workspaces={
+                "primary": "/srv/trie-platform/workspaces/trie-space/exclusive-job/primary",
+            },
+            includes={},
+            weight="exclusive",
+            argv=("true",),
+            created_at="2026-08-25T00:00:00+00:00",
+            overlays={
+                "primary": OverlayManifest(
+                    transfer=("src/changed.py",),
+                    delete=("src/removed.py",),
+                ),
+            },
+        )
+
+        self.assertEqual(JobSpec.from_dict(spec.to_dict()), spec)
+        self.assertEqual(
+            spec.to_dict()["overlays"]["primary"],
+            {"transfer": ["src/changed.py"], "delete": ["src/removed.py"]},
+        )
+
+    def test_job_spec_rejects_unknown_weight(self) -> None:
+        with self.assertRaisesRegex(ValueError, "weight must be"):
+            JobSpec(
+                job_id="bad-weight",
+                repository="trie-space",
+                workspace="/tmp/workspace",
+                workspaces={"primary": "/tmp/workspace"},
+                includes={},
+                weight="large",
+                argv=("true",),
+                created_at="2026-08-25T00:00:00+00:00",
+            )
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)

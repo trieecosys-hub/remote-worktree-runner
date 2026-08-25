@@ -32,7 +32,7 @@ class DiskGuard:
     def admit(self, path: Path, weight: str) -> int:
         """Reject heavy work when the admission threshold is not met."""
         free = self.snapshot(path)
-        if weight == "heavy" and free < self.minimum:
+        if weight in {"heavy", "exclusive"} and free < self.minimum:
             raise RuntimeError(
                 f"heavy job rejected: {free // 1024**3} GiB free, "
                 f"{self.minimum // 1024**3} GiB required",
@@ -88,4 +88,3 @@ class HeavyJobLease:
 
     def __exit__(self, *_args: object) -> None:
         self.release()
-

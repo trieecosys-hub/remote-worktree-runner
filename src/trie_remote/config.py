@@ -29,6 +29,7 @@ class RunnerConfig:
     minimum_free_gib: int
     warning_free_gib: int
     cancellation_free_gib: int
+    max_heavy_jobs: int
     allowed_repositories: frozenset[str]
 
     @classmethod
@@ -49,6 +50,15 @@ class RunnerConfig:
         )
         if not allowed_repositories:
             raise ValueError("at least one allowed repository is required")
+        max_heavy_jobs = int(
+            value(
+                "REMOTE_RUNNER_MAX_HEAVY_JOBS",
+                "TRIE_REMOTE_MAX_HEAVY_JOBS",
+                "1",
+            ),
+        )
+        if max_heavy_jobs < 1:
+            raise ValueError("max heavy jobs must be positive")
         return cls(
             ssh_alias=value(
                 "REMOTE_RUNNER_SSH_ALIAS",
@@ -83,5 +93,6 @@ class RunnerConfig:
                     "60",
                 ),
             ),
+            max_heavy_jobs=max_heavy_jobs,
             allowed_repositories=allowed_repositories,
         )
