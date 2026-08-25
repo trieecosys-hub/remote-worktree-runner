@@ -8,6 +8,7 @@ host=trie-docker
 remote_root=/srv/trie-platform
 repositories=trie-vms,trie-center,trie-process,trie-space,trie-platform-ops
 max_heavy_jobs=1
+runner_only=false
 dry_run=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -15,8 +16,9 @@ while [[ $# -gt 0 ]]; do
     --remote-root) remote_root=${2:?missing remote root}; shift 2 ;;
     --repositories) repositories=${2:?missing repositories}; shift 2 ;;
     --max-heavy-jobs) max_heavy_jobs=${2:?missing max heavy jobs}; shift 2 ;;
+    --runner-only) runner_only=true; shift ;;
     --dry-run) dry_run=true; shift ;;
-    *) echo "usage: $0 [--host HOST] [--remote-root PATH] [--repositories CSV] [--max-heavy-jobs COUNT] [--dry-run]" >&2; exit 2 ;;
+    *) echo "usage: $0 [--host HOST] [--remote-root PATH] [--repositories CSV] [--max-heavy-jobs COUNT] [--runner-only] [--dry-run]" >&2; exit 2 ;;
   esac
 done
 
@@ -38,6 +40,10 @@ if $dry_run; then
   echo "would allow repositories: $repositories"
   echo "would configure $max_heavy_jobs concurrent heavy jobs"
   echo "would enable and verify systemd lingering for the remote runner account"
+  if $runner_only; then
+    echo "would install only the runner artifact and wrapper"
+    exit 0
+  fi
   echo "would download checksum-verified kubectl $KUBECTL_VERSION for linux/amd64"
   echo "would download checksum-verified Kind $KIND_VERSION for linux/amd64"
   echo "would download checksum-verified jq $JQ_VERSION for linux/amd64"
@@ -53,6 +59,29 @@ ssh "$host" 'bash -s' <"$root/install/ensure-systemd-linger.sh"
 "$root/install/build-zipapp.sh"
 stage=$(mktemp -d)
 trap 'rm -rf "$stage"' EXIT
+
+install_runner() {
+  ssh "$host" "mkdir -p $remote_root/bin $remote_root/repos $remote_root/workspaces $remote_root/jobs $remote_root/caches $remote_root/locks $remote_root/environments $remote_root/toolchains && chmod 0750 $remote_root $remote_root/bin $remote_root/repos $remote_root/workspaces $remote_root/jobs $remote_root/caches $remote_root/locks $remote_root/environments $remote_root/toolchains"
+  scp "$root/dist/trie-remote.pyz" "$host:$remote_root/bin/trie-remote.pyz.upload"
+  ssh "$host" "chmod 0755 $remote_root/bin/trie-remote.pyz.upload && mv $remote_root/bin/trie-remote.pyz.upload $remote_root/bin/trie-remote.pyz"
+
+  local wrapper_tmp="$stage/trie-runner"
+  printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail' \
+    "export REMOTE_RUNNER_ROOT=\"$remote_root\"" \
+    "export REMOTE_RUNNER_ALLOWED_REPOSITORIES=\"$repositories\"" \
+    "export REMOTE_RUNNER_MAX_HEAVY_JOBS=\"$max_heavy_jobs\"" \
+    "exec /usr/bin/python3 \"$remote_root/bin/trie-remote.pyz\" server \"\$@\"" \
+    >"$wrapper_tmp"
+  chmod 0755 "$wrapper_tmp"
+  scp "$wrapper_tmp" "$host:$remote_root/bin/trie-runner.upload"
+  ssh "$host" "chmod 0755 $remote_root/bin/trie-runner.upload && mv $remote_root/bin/trie-runner.upload $remote_root/bin/trie-runner"
+}
+
+if $runner_only; then
+  install_runner
+  echo "installed trie-runner on $host with $max_heavy_jobs heavy job permits"
+  exit 0
+fi
 
 kubectl_url="https://dl.k8s.io/release/$KUBECTL_VERSION/bin/linux/amd64/kubectl"
 curl -fsSLo "$stage/kubectl" "$kubectl_url"
@@ -110,26 +139,15 @@ mkdir -p "$stage/go-toolchain"
 tar -xzf "$stage/$go_filename" --strip-components=1 -C "$stage/go-toolchain"
 
 ssh "$host" "mkdir -p $remote_root/bin $remote_root/repos $remote_root/workspaces $remote_root/jobs $remote_root/caches $remote_root/locks $remote_root/environments $remote_root/toolchains && chmod 0750 $remote_root $remote_root/bin $remote_root/repos $remote_root/workspaces $remote_root/jobs $remote_root/caches $remote_root/locks $remote_root/environments $remote_root/toolchains"
-scp "$root/dist/trie-remote.pyz" "$host:$remote_root/bin/trie-remote.pyz.upload"
 scp "$stage/kubectl" "$host:$remote_root/bin/kubectl.upload"
 scp "$stage/kind" "$host:$remote_root/bin/kind.upload"
 scp "$stage/jq" "$host:$remote_root/bin/jq.upload"
 scp "$stage/ripgrep-root/usr/bin/rg" "$host:$remote_root/bin/rg.upload"
-ssh "$host" "chmod 0755 $remote_root/bin/trie-remote.pyz.upload $remote_root/bin/kubectl.upload $remote_root/bin/kind.upload $remote_root/bin/jq.upload $remote_root/bin/rg.upload && mv $remote_root/bin/trie-remote.pyz.upload $remote_root/bin/trie-remote.pyz && mv $remote_root/bin/kubectl.upload $remote_root/bin/kubectl && mv $remote_root/bin/kind.upload $remote_root/bin/kind && mv $remote_root/bin/jq.upload $remote_root/bin/jq && mv $remote_root/bin/rg.upload $remote_root/bin/rg"
+ssh "$host" "chmod 0755 $remote_root/bin/kubectl.upload $remote_root/bin/kind.upload $remote_root/bin/jq.upload $remote_root/bin/rg.upload && mv $remote_root/bin/kubectl.upload $remote_root/bin/kubectl && mv $remote_root/bin/kind.upload $remote_root/bin/kind && mv $remote_root/bin/jq.upload $remote_root/bin/jq && mv $remote_root/bin/rg.upload $remote_root/bin/rg"
 
 rsync -a --delete "$stage/node-process/" "$host:$remote_root/toolchains/node-$NODE_PROCESS_VERSION/"
 rsync -a --delete "$stage/node-center/" "$host:$remote_root/toolchains/node-$NODE_CENTER_VERSION/"
 rsync -a --delete "$stage/go-toolchain/" "$host:$remote_root/toolchains/go-$GO_VERSION/"
 ssh "$host" "ln -sfn $remote_root/toolchains/node-$NODE_PROCESS_VERSION $remote_root/toolchains/process-node && ln -sfn $remote_root/toolchains/node-$NODE_CENTER_VERSION $remote_root/toolchains/center-node && ln -sfn $remote_root/toolchains/go-$GO_VERSION $remote_root/toolchains/go"
-
-wrapper_tmp="$stage/trie-runner"
-printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail' \
-  "export REMOTE_RUNNER_ROOT=\"$remote_root\"" \
-  "export REMOTE_RUNNER_ALLOWED_REPOSITORIES=\"$repositories\"" \
-  "export REMOTE_RUNNER_MAX_HEAVY_JOBS=\"$max_heavy_jobs\"" \
-  "exec /usr/bin/python3 \"$remote_root/bin/trie-remote.pyz\" server \"\$@\"" \
-  >"$wrapper_tmp"
-chmod 0755 "$wrapper_tmp"
-scp "$wrapper_tmp" "$host:$remote_root/bin/trie-runner.upload"
-ssh "$host" "chmod 0755 $remote_root/bin/trie-runner.upload && mv $remote_root/bin/trie-runner.upload $remote_root/bin/trie-runner"
+install_runner
 echo "installed trie-runner, kubectl $KUBECTL_VERSION, Kind $KIND_VERSION, jq $JQ_VERSION, ripgrep $RIPGREP_VERSION, Node.js $NODE_PROCESS_VERSION/$NODE_CENTER_VERSION, and Go $GO_VERSION on $host"

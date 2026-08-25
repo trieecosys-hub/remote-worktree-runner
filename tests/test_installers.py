@@ -156,6 +156,25 @@ exit 1
         self.assertIn("REMOTE_RUNNER_MAX_HEAVY_JOBS", installer)
         self.assertIn("$max_heavy_jobs", installer)
 
+    def test_server_installer_has_a_runner_only_hot_update(self) -> None:
+        result = subprocess.run(
+            [
+                ROOT / "install" / "install-server.sh",
+                "--runner-only",
+                "--max-heavy-jobs",
+                "3",
+                "--dry-run",
+            ],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertIn("would install only the runner artifact and wrapper", result.stdout)
+        self.assertIn("would configure 3 concurrent heavy jobs", result.stdout)
+        self.assertNotIn("would download", result.stdout)
+
     def test_server_installer_accepts_safe_remote_root_and_rejects_shell_input(
         self,
     ) -> None:
