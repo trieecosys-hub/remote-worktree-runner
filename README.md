@@ -60,6 +60,13 @@ install/install-server.sh \
   --repositories remote-worktree-runner,example-api
 ```
 
+Server jobs use transient `systemd --user` units. The installer enables and
+verifies systemd lingering for the remote runner account so jobs survive the
+last SSH session closing. On a host that does not grant non-interactive sudo,
+run `sudo loginctl enable-linger <runner-user>` once on the server, then rerun
+the installer. `trie-run doctor` reports `systemd_linger: true` only when this
+prerequisite is active.
+
 Configure the client shell to match the server installation:
 
 ```bash

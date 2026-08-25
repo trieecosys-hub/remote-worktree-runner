@@ -30,6 +30,7 @@ fi
 if $dry_run; then
   echo "would verify and install runner on $host:$remote_root/bin"
   echo "would allow repositories: $repositories"
+  echo "would enable and verify systemd lingering for the remote runner account"
   echo "would download checksum-verified kubectl $KUBECTL_VERSION for linux/amd64"
   echo "would download checksum-verified Kind $KIND_VERSION for linux/amd64"
   echo "would download checksum-verified jq $JQ_VERSION for linux/amd64"
@@ -39,6 +40,8 @@ if $dry_run; then
   echo "would download checksum-verified Go $GO_VERSION for linux/amd64"
   exit 0
 fi
+
+ssh "$host" 'bash -s' <"$root/install/ensure-systemd-linger.sh"
 
 "$root/install/build-zipapp.sh"
 stage=$(mktemp -d)

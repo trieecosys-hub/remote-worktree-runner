@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import subprocess
+import tempfile
 import time
 import unittest
 
@@ -12,6 +14,52 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class InstallerTests(unittest.TestCase):
+    def test_linger_helper_prefers_user_authorization_over_sudo(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            temporary_path = Path(temporary)
+            bin_path = temporary_path / "bin"
+            bin_path.mkdir()
+            state = temporary_path / "linger-state"
+            state.write_text("no\n", encoding="utf-8")
+            sudo_marker = temporary_path / "sudo-called"
+            commands = {
+                "id": """#!/usr/bin/env bash
+if [[ "$1" == "-un" ]]; then echo runner; else echo 1000; fi
+""",
+                "loginctl": """#!/usr/bin/env bash
+if [[ "$1" == "show-user" ]]; then cat "$LINGER_STATE"; exit 0; fi
+if [[ "$1" == "enable-linger" ]]; then printf 'yes\\n' >"$LINGER_STATE"; exit 0; fi
+exit 2
+""",
+                "sudo": """#!/usr/bin/env bash
+touch "$SUDO_MARKER"
+exit 1
+""",
+            }
+            for name, content in commands.items():
+                command = bin_path / name
+                command.write_text(content, encoding="utf-8")
+                command.chmod(0o755)
+            environment = {
+                **os.environ,
+                "PATH": f"{bin_path}:{os.environ['PATH']}",
+                "LINGER_STATE": str(state),
+                "SUDO_MARKER": str(sudo_marker),
+            }
+
+            result = subprocess.run(
+                ["bash", ROOT / "install" / "ensure-systemd-linger.sh"],
+                cwd=ROOT,
+                env=environment,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(state.read_text(encoding="utf-8"), "yes\n")
+            self.assertFalse(sudo_marker.exists())
+
     def test_zipapp_build_is_byte_reproducible(self) -> None:
         script = ROOT / "install" / "build-zipapp.sh"
         output = ROOT / "dist" / "trie-remote.pyz"
@@ -61,6 +109,20 @@ class InstallerTests(unittest.TestCase):
         )
 
         self.assertIn("checksum-verified ripgrep 15.2.0", result.stdout)
+
+    def test_server_installer_dry_run_includes_systemd_linger(self) -> None:
+        result = subprocess.run(
+            [ROOT / "install" / "install-server.sh", "--dry-run"],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertIn(
+            "would enable and verify systemd lingering for the remote runner account",
+            result.stdout,
+        )
 
     def test_server_installer_accepts_safe_remote_root_and_rejects_shell_input(self) -> None:
         script = ROOT / "install" / "install-server.sh"

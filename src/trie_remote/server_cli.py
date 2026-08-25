@@ -271,6 +271,15 @@ def main(argv: list[str] | None = None) -> int:
                 return None
             return (result.stdout or result.stderr).strip().splitlines()[0]
 
+        systemd_linger = version(
+            [
+                "/usr/bin/loginctl",
+                "show-user",
+                str(os.getuid()),
+                "--property=Linger",
+                "--value",
+            ],
+        ) == "yes"
         report = {
             "reachable": True,
             "architecture": platform.machine(),
@@ -286,11 +295,16 @@ def main(argv: list[str] | None = None) -> int:
             "kind": version([str(paths.bin / "kind"), "version"]),
             "jq": version([str(paths.bin / "jq"), "--version"]),
             "systemd_user": version(["systemctl", "--user", "is-system-running"]),
+            "systemd_linger": systemd_linger,
             "free_bytes": shutil.disk_usage(paths.root).free,
             "remote_root": str(paths.root),
         }
         print(json.dumps(report, sort_keys=True))
-        return 0 if report["docker"] and report["systemd_user"] else 1
+        return (
+            0
+            if report["docker"] and report["systemd_user"] and systemd_linger
+            else 1
+        )
 
     if arguments.command == "reserve":
         spec = JobSpec.from_dict(json.load(sys.stdin))

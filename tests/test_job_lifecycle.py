@@ -22,6 +22,72 @@ from trie_remote.server_paths import ServerPaths
 
 
 class JobLifecycleTests(unittest.TestCase):
+    def test_doctor_requires_systemd_linger(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "root"
+            environment = {
+                "REMOTE_RUNNER_ROOT": str(root),
+                "REMOTE_RUNNER_ALLOWED_REPOSITORIES": "trie-space",
+            }
+
+            def run_command(
+                command: list[str],
+                **_kwargs: object,
+            ) -> subprocess.CompletedProcess[str]:
+                output = (
+                    "no\n"
+                    if command[0] == "/usr/bin/loginctl"
+                    else "available\n"
+                )
+                return subprocess.CompletedProcess(command, 0, stdout=output, stderr="")
+
+            output = StringIO()
+            with (
+                patch.dict(os.environ, environment, clear=True),
+                patch(
+                    "trie_remote.server_cli.subprocess.run",
+                    side_effect=run_command,
+                ),
+                redirect_stdout(output),
+            ):
+                result = server_main(["doctor"])
+
+            self.assertEqual(result, 1)
+            self.assertFalse(json.loads(output.getvalue())["systemd_linger"])
+
+    def test_doctor_accepts_systemd_linger(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "root"
+            environment = {
+                "REMOTE_RUNNER_ROOT": str(root),
+                "REMOTE_RUNNER_ALLOWED_REPOSITORIES": "trie-space",
+            }
+
+            def run_command(
+                command: list[str],
+                **_kwargs: object,
+            ) -> subprocess.CompletedProcess[str]:
+                output = (
+                    "yes\n"
+                    if command[0] == "/usr/bin/loginctl"
+                    else "available\n"
+                )
+                return subprocess.CompletedProcess(command, 0, stdout=output, stderr="")
+
+            output = StringIO()
+            with (
+                patch.dict(os.environ, environment, clear=True),
+                patch(
+                    "trie_remote.server_cli.subprocess.run",
+                    side_effect=run_command,
+                ),
+                redirect_stdout(output),
+            ):
+                result = server_main(["doctor"])
+
+            self.assertEqual(result, 0)
+            self.assertTrue(json.loads(output.getvalue()).get("systemd_linger"))
+
     def test_missing_status_and_cancel_return_structured_retryable_results(
         self,
     ) -> None:
