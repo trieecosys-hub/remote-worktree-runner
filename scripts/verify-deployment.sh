@@ -63,10 +63,10 @@ wait_until_admitted() {
   local fixture_job=$1
   local deadline=$((SECONDS + 30))
   while (( SECONDS < deadline )); do
-    local state
-    state=$("$trie_run" status "$fixture_job" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin).get("state", ""))' 2>/dev/null || true)
-    case "$state" in
-      queued|running|passed|failed|cancelled) return 0 ;;
+    local admission
+    admission=$("$trie_run" status "$fixture_job" 2>/dev/null | python3 -c 'import json,sys; value=json.load(sys.stdin); state=value.get("state", ""); print("ready" if state in {"running", "passed", "failed", "cancelled"} or (state == "queued" and "queue_position" in value) else "waiting")' 2>/dev/null || true)
+    case "$admission" in
+      ready) return 0 ;;
     esac
     sleep 1
   done
