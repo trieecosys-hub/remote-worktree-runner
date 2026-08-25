@@ -180,17 +180,14 @@ def run_worktrees(
                 raise ValueError("server prepared unexpected workspaces")
             for role, state in states.items():
                 transport.sync_overlay(state, prepared[role], overlays[role])
-            execution = transport.execute(job_id)
-            print(json.dumps(execution.status, indent=2, sort_keys=True))
-            return execution.returncode
-
-        for role, state in states.items():
-            transport.push_commit(state, job_id, role)
-            workspace = transport.prepare_workspace(state, job_id, role)
-            if workspace != remote_workspaces[role]:
-                raise ValueError(f"server workspace changed for role: {role}")
-            transport.sync_full_overlay(state, workspace)
-        transport.ssh(["start"], input_bytes=json.dumps(spec.to_dict()).encode())
+        else:
+            for role, state in states.items():
+                transport.push_commit(state, job_id, role)
+                workspace = transport.prepare_workspace(state, job_id, role)
+                if workspace != remote_workspaces[role]:
+                    raise ValueError(f"server workspace changed for role: {role}")
+                transport.sync_full_overlay(state, workspace)
+            transport.ssh(["start"], input_bytes=json.dumps(spec.to_dict()).encode())
     except (Exception, KeyboardInterrupt):
         try:
             cancellation = transport.ssh(["cancel", job_id], check=False)
@@ -207,6 +204,17 @@ def run_worktrees(
                 file=sys.stderr,
             )
         raise
+    if reservation.protocol_version >= 2:
+        try:
+            execution = transport.execute(job_id)
+        except KeyboardInterrupt:
+            print(
+                f"\nExecution stream interrupted; job {job_id} continues on server",
+                file=sys.stderr,
+            )
+            return 130
+        print(json.dumps(execution.status, indent=2, sort_keys=True))
+        return execution.returncode
     try:
         transport.ssh(["logs", "-f", job_id], capture_output=False)
     except KeyboardInterrupt:

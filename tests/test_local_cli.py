@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import subprocess
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
@@ -32,9 +32,15 @@ class FakeTransport:
 
 
 class WorkflowTransport:
-    def __init__(self, *, fail_push: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        fail_push: bool = False,
+        interrupt_execute: bool = False,
+    ) -> None:
         self.events: list[tuple[str, object]] = []
         self.fail_push = fail_push
+        self.interrupt_execute = interrupt_execute
 
     remote_root = Path("/srv/trie-platform")
     exclude_file = Path("/tmp/sync-excludes.txt")
@@ -78,6 +84,8 @@ class WorkflowTransport:
 
     def execute(self, job_id: str) -> ExecutionResult:
         self.events.append(("execute", job_id))
+        if self.interrupt_execute:
+            raise KeyboardInterrupt
         return ExecutionResult(0, {"state": "passed", "exit_code": 0})
 
     def ssh(
@@ -295,6 +303,36 @@ class LocalCliTests(unittest.TestCase):
             [event[0] for event in transport.events],
             ["reserve", "push", "cancel"],
         )
+
+    def test_execute_interrupt_leaves_the_remote_job_running(self) -> None:
+        transport = WorkflowTransport(interrupt_execute=True)
+        stderr = StringIO()
+        with (
+            patch(
+                "trie_remote.local_cli.RepositoryState.discover",
+                return_value=self.state,
+            ),
+            patch(
+                "trie_remote.local_cli.RepositoryState.overlay",
+                return_value=OverlayManifest(),
+            ),
+            redirect_stderr(stderr),
+        ):
+            result = run_worktrees(
+                self.state.root,
+                {},
+                "alpha",
+                "light",
+                ["true"],
+                transport,
+            )
+
+        self.assertEqual(result, 130)
+        self.assertEqual(
+            [event[0] for event in transport.events],
+            ["reserve", "push", "prepare-all", "execute"],
+        )
+        self.assertIn("continues on server", stderr.getvalue())
 
     def test_status_and_cancel_preserve_structured_missing_job_response(self) -> None:
         class MissingTransport:

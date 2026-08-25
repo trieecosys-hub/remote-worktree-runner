@@ -166,7 +166,13 @@ class Transport:
         """Transfer only changed and untracked files from one worktree."""
         if not manifest.transfer:
             return
-        file_list = b"\0".join(path.encode() for path in manifest.transfer) + b"\0"
+        file_list = (
+            b"\0".join(
+                path.encode("utf-8", errors="surrogateescape")
+                for path in manifest.transfer
+            )
+            + b"\0"
+        )
         self.run(
             [
                 "rsync",
