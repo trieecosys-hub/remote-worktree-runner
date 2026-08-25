@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 import signal
 import subprocess
 import time
+from pathlib import Path
 
 from trie_remote.config import RunnerConfig
 from trie_remote.job_environment import create_job_environment, ensure_job_builder
-from trie_remote.job_store import JobStore, utc_now
+from trie_remote.job_store import FINAL_STATES, JobStore, utc_now
 from trie_remote.scheduler import (
     DiskGuard,
     ResourcePool,
@@ -62,18 +62,41 @@ def run_job(
         )
         return 130
     try:
-        environment = {**os.environ, **create_job_environment(paths, spec)}
-        if create_builder:
-            ensure_job_builder(
-                paths,
-                spec,
-                lambda argv: subprocess.run(
-                    argv,
-                    check=True,
-                    env=environment,
-                    capture_output=True,
-                ),
+        try:
+            environment = {**os.environ, **create_job_environment(paths, spec)}
+            if create_builder:
+                ensure_job_builder(
+                    paths,
+                    spec,
+                    lambda argv: subprocess.run(
+                        argv,
+                        check=True,
+                        env=environment,
+                        capture_output=True,
+                    ),
+                )
+        except Exception as error:  # noqa: BLE001
+            detail = getattr(error, "stderr", None) or str(error)
+            if isinstance(detail, bytes):
+                detail = detail.decode("utf-8", errors="replace")
+            message = (
+                f"[trie-runner] worker setup failed: "
+                f"{type(error).__name__}: {str(detail).strip()}\n"
             )
+            with store.log_path(job_id).open("ab", buffering=0) as log:
+                log.write(message.encode("utf-8", errors="replace"))
+            status = store.status(job_id)
+            if status["state"] in FINAL_STATES:
+                return int(status.get("exit_code", 1))
+            store.transition(
+                job_id,
+                "failed",
+                exit_code=1,
+                reason="worker setup failed",
+                finished_at=utc_now(),
+            )
+            return 1
+
         store.transition(job_id, "running", pid=os.getpid(), started_at=time.time())
         with store.log_path(job_id).open("ab", buffering=0) as log:
             try:
@@ -111,7 +134,9 @@ def run_job(
                     )
                     return exit_code
                 if not warned and guard.monitor(paths.root) == "warning":
-                    log.write(b"[trie-runner] warning: server disk below warning threshold\n")
+                    log.write(
+                        b"[trie-runner] warning: server disk below warning threshold\n"
+                    )
                     warned = True
                 time.sleep(1)
             exit_code = int(process.returncode)

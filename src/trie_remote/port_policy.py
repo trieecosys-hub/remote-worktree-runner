@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
 import json
 import re
 import subprocess
+from collections.abc import Callable, Mapping, Sequence
 
 
 class PortConflictError(ValueError):
@@ -103,8 +103,27 @@ def validate_compose_command(
         return None
     effective_project = compose_project_name(values, project_name)
 
-    config_command = ["/usr/bin/docker", *values[:action_index], "config", "--format", "json"]
-    config_result = run(config_command, check=True, capture_output=True, text=True)
+    config_command = [
+        "/usr/bin/docker",
+        *values[:action_index],
+        "config",
+        "--format",
+        "json",
+    ]
+    try:
+        config_result = run(
+            config_command,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError as error:
+        detail = error.stderr or error.stdout or "no diagnostic output"
+        if isinstance(detail, bytes):
+            detail = detail.decode("utf-8", errors="replace")
+        raise PortConflictError(
+            f"Compose configuration failed: {str(detail).strip()[:4096]}",
+        ) from None
     compose_config = json.loads(config_result.stdout)
     ps_result = run(
         ["/usr/bin/docker", "ps", "-q"],

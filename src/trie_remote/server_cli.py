@@ -19,7 +19,7 @@ from trie_remote.docker_policy import validate_docker_arguments
 from trie_remote.job_environment import cleanup_job_builder, job_resource_name
 from trie_remote.job_store import FINAL_STATES, JobSpec, JobStore, utc_now
 from trie_remote.job_worker import run_job
-from trie_remote.port_policy import validate_compose_command
+from trie_remote.port_policy import PortConflictError, validate_compose_command
 from trie_remote.preview_registry import PreviewRegistry
 from trie_remote.scheduler import DiskGuard, ResourcePool
 from trie_remote.scheduler import unit_is_inactive as _unit_is_inactive
@@ -342,11 +342,15 @@ def main(argv: list[str] | None = None) -> int:
         metadata = json.loads(metadata_file.read_text(encoding="utf-8"))
         builder = job_resource_name(metadata["repository"], arguments.job)
         validate_docker_arguments(docker_arguments, builder)
-        compose_project = validate_compose_command(
-            docker_arguments,
-            builder,
-            subprocess.run,
-        )
+        try:
+            compose_project = validate_compose_command(
+                docker_arguments,
+                builder,
+                subprocess.run,
+            )
+        except PortConflictError as error:
+            print(f"trie-runner: {error}", file=sys.stderr)
+            return 2
         if compose_project is not None:
             project_file = paths.jobs / arguments.job / "compose-projects.json"
             projects = (
@@ -544,6 +548,7 @@ def main(argv: list[str] | None = None) -> int:
         projects = [resource]
         if project_file.is_file():
             projects.extend(json.loads(project_file.read_text(encoding="utf-8")))
+        workspace_exists = Path(spec.workspace).is_dir()
         for project in dict.fromkeys(projects):
             compose = [
                 "/usr/bin/docker",
@@ -555,7 +560,8 @@ def main(argv: list[str] | None = None) -> int:
             ]
             if arguments.volumes:
                 compose.append("--volumes")
-            subprocess.run(compose, cwd=spec.workspace, check=False)
+            if workspace_exists:
+                subprocess.run(compose, cwd=spec.workspace, check=False)
         cleanup_job_builder(paths, spec, subprocess.run)
         for role, workspace in spec.workspaces.items():
             candidate = ensure_below(paths.workspaces, Path(workspace))

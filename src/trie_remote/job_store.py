@@ -2,22 +2,22 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
 import json
 import os
-from pathlib import Path
 import tempfile
-from typing import Any, Mapping
+from collections.abc import Mapping
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
 
 from trie_remote.common import ensure_below, validate_identifier
 from trie_remote.server_paths import ServerPaths
 
-
 FINAL_STATES = frozenset({"passed", "failed", "cancelled"})
 TRANSITIONS = {
     "preparing": frozenset({"queued", "cancelled"}),
-    "queued": frozenset({"running", "cancelled"}),
+    "queued": frozenset({"running", "failed", "cancelled"}),
     "running": FINAL_STATES,
 }
 
@@ -35,7 +35,7 @@ class OverlayManifest:
     delete: tuple[str, ...] = ()
 
     @classmethod
-    def from_dict(cls, value: Mapping[str, Any]) -> "OverlayManifest":
+    def from_dict(cls, value: Mapping[str, Any]) -> OverlayManifest:
         """Build a manifest from JSON-compatible values."""
         return cls(
             transfer=tuple(str(path) for path in value.get("transfer", ())),
@@ -88,7 +88,7 @@ class JobSpec:
         return value
 
     @classmethod
-    def from_dict(cls, value: Mapping[str, Any]) -> "JobSpec":
+    def from_dict(cls, value: Mapping[str, Any]) -> JobSpec:
         """Validate and build a spec received over SSH."""
         return cls(
             job_id=str(value["job_id"]),

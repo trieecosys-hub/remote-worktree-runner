@@ -17,6 +17,7 @@ from unittest.mock import patch
 
 from trie_remote.job_store import JobSpec, JobStore
 from trie_remote.job_worker import run_job
+from trie_remote.port_policy import PortConflictError
 from trie_remote.preview import PreviewRoute
 from trie_remote.scheduler import DiskGuard, ResourcePool, SchedulerCancelled
 from trie_remote.server_cli import main as server_main
@@ -506,6 +507,140 @@ class JobLifecycleTests(unittest.TestCase):
             self.assertEqual(status["state"], "failed")
             self.assertEqual(status["exit_code"], 7)
             self.assertIn("marker", store.log_path("fixture").read_text())
+
+    def test_worker_finalizes_a_builder_setup_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = ServerPaths.from_root(Path(temporary) / "root")
+            paths.create()
+            workspace = Path(temporary) / "workspace"
+            workspace.mkdir()
+            spec = JobSpec(
+                job_id="builder-failure",
+                repository="trie-space",
+                workspace=str(workspace),
+                workspaces={"primary": str(workspace)},
+                includes={},
+                weight="light",
+                argv=("true",),
+                created_at="2026-08-25T00:00:00+00:00",
+            )
+            store = JobStore(paths)
+            store.create(spec)
+            store.transition("builder-failure", "queued")
+
+            failure = subprocess.CalledProcessError(
+                1,
+                ["docker", "buildx", "create"],
+                stderr=b"builder unavailable",
+            )
+            with patch(
+                "trie_remote.job_worker.ensure_job_builder",
+                side_effect=failure,
+            ):
+                result = run_job(
+                    paths,
+                    "builder-failure",
+                    disk_guard=DiskGuard(0, 0, 0, lambda _path: 1024**4),
+                )
+
+            status = store.status("builder-failure")
+            output = store.log_path("builder-failure").read_text(encoding="utf-8")
+            self.assertEqual(result, 1)
+            self.assertEqual(status["state"], "failed")
+            self.assertEqual(status["reason"], "worker setup failed")
+            self.assertIn("builder unavailable", output)
+            self.assertNotIn("Traceback", output)
+
+    def test_cleanup_is_idempotent_when_the_workspace_is_already_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "root"
+            paths = ServerPaths.from_root(root)
+            paths.create()
+            workspace = root / "workspaces/trie-space/already-clean/primary"
+            spec = JobSpec(
+                job_id="already-clean",
+                repository="trie-space",
+                workspace=str(workspace),
+                workspaces={"primary": str(workspace)},
+                includes={},
+                weight="light",
+                argv=("true",),
+                created_at="2026-08-25T00:00:00+00:00",
+            )
+            store = JobStore(paths)
+            store.create(spec)
+            store.transition("already-clean", "queued")
+            store.transition("already-clean", "running")
+            store.finish("already-clean", 0)
+
+            def run_command(
+                command: list[str],
+                **kwargs: object,
+            ) -> subprocess.CompletedProcess[str]:
+                cwd = kwargs.get("cwd")
+                if cwd is not None and not Path(str(cwd)).exists():
+                    raise FileNotFoundError(str(cwd))
+                return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+            output = StringIO()
+            environment = {
+                "REMOTE_RUNNER_ROOT": str(root),
+                "REMOTE_RUNNER_ALLOWED_REPOSITORIES": "trie-space",
+            }
+            with (
+                patch.dict(os.environ, environment, clear=True),
+                patch(
+                    "trie_remote.server_cli.subprocess.run",
+                    side_effect=run_command,
+                ),
+                redirect_stdout(output),
+            ):
+                result = server_main(["cleanup", "already-clean"])
+
+            self.assertEqual(result, 0)
+            self.assertTrue(json.loads(output.getvalue())["cleaned"])
+
+    def test_docker_preflight_returns_a_structured_compose_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "root"
+            paths = ServerPaths.from_root(root)
+            paths.create()
+            workspace = root / "workspaces/trie-space/preflight/primary"
+            spec = JobSpec(
+                job_id="preflight",
+                repository="trie-space",
+                workspace=str(workspace),
+                workspaces={"primary": str(workspace)},
+                includes={},
+                weight="light",
+                argv=("true",),
+                created_at="2026-08-25T00:00:00+00:00",
+            )
+            JobStore(paths).create(spec)
+            environment = {
+                "REMOTE_RUNNER_ROOT": str(root),
+                "REMOTE_RUNNER_ALLOWED_REPOSITORIES": "trie-space",
+            }
+            stderr = StringIO()
+            with (
+                patch.dict(os.environ, environment, clear=True),
+                patch(
+                    "trie_remote.server_cli.validate_compose_command",
+                    side_effect=PortConflictError(
+                        "Compose configuration failed: required variable is missing",
+                    ),
+                ),
+                patch("trie_remote.server_cli.os.execv") as execv,
+                redirect_stderr(stderr),
+            ):
+                result = server_main(
+                    ["docker", "--job", "preflight", "--", "compose", "up"],
+                )
+
+            self.assertEqual(result, 2)
+            self.assertIn("Compose configuration failed", stderr.getvalue())
+            self.assertNotIn("Traceback", stderr.getvalue())
+            execv.assert_not_called()
 
     def test_worker_cancels_while_queued_before_creating_builder(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
