@@ -61,6 +61,19 @@ install/install-server.sh \
   --max-heavy-jobs 3
 ```
 
+Docker and Kind hosts also need enough inotify capacity for nested
+containerd processes. Preview and apply the persistent host limits before
+running integration workloads:
+
+```bash
+install/configure-host-kernel.sh --host remote-docker --dry-run
+install/configure-host-kernel.sh --host remote-docker
+```
+
+The host-kernel installer requests `sudo` on the server, applies the limits
+live without restarting Docker, and verifies the effective values. The
+configuration persists in `/etc/sysctl.d/99-trie-platform-inotify.conf`.
+
 Server jobs use transient `systemd --user` units. The installer enables and
 verifies systemd lingering for the remote runner account so jobs survive the
 last SSH session closing. On a host that does not grant non-interactive sudo,

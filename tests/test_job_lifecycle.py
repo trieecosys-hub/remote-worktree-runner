@@ -202,6 +202,11 @@ class JobLifecycleTests(unittest.TestCase):
             with (
                 patch.dict(os.environ, environment, clear=True),
                 patch(
+                    "trie_remote.server_cli._kernel_integer",
+                    side_effect=(8192, 1048576, 32768),
+                    create=True,
+                ),
+                patch(
                     "trie_remote.server_cli.subprocess.run",
                     side_effect=run_command,
                 ),
@@ -216,6 +221,43 @@ class JobLifecycleTests(unittest.TestCase):
             self.assertEqual(report["scheduler_held_permits"], 0)
             self.assertEqual(report["scheduler_queued_jobs"], 0)
             self.assertFalse(report["scheduler_exclusive_waiting"])
+            self.assertEqual(report.get("inotify_max_user_instances"), 8192)
+            self.assertEqual(report.get("inotify_max_user_watches"), 1048576)
+            self.assertEqual(report.get("inotify_max_queued_events"), 32768)
+            self.assertTrue(report.get("inotify_ready"))
+
+    def test_doctor_rejects_host_inotify_limits_that_are_too_low(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "root"
+            environment = {
+                "REMOTE_RUNNER_ROOT": str(root),
+                "REMOTE_RUNNER_ALLOWED_REPOSITORIES": "trie-space",
+            }
+
+            def run_command(
+                command: list[str],
+                **_kwargs: object,
+            ) -> subprocess.CompletedProcess[str]:
+                output = "yes\n" if command[0] == "/usr/bin/loginctl" else "available\n"
+                return subprocess.CompletedProcess(command, 0, stdout=output, stderr="")
+
+            output = StringIO()
+            with (
+                patch.dict(os.environ, environment, clear=True),
+                patch(
+                    "trie_remote.server_cli._kernel_integer",
+                    side_effect=(128, 65536, 16384),
+                ),
+                patch(
+                    "trie_remote.server_cli.subprocess.run",
+                    side_effect=run_command,
+                ),
+                redirect_stdout(output),
+            ):
+                result = server_main(["doctor"])
+
+            self.assertEqual(result, 1)
+            self.assertFalse(json.loads(output.getvalue()).get("inotify_ready"))
 
     def test_status_enriches_a_queued_heavy_job(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -73,13 +73,44 @@ exit 1
     def test_shell_installers_are_strict_and_support_dry_run(self) -> None:
         for relative in (
             "install/build-zipapp.sh",
+            "install/configure-host-kernel.sh",
             "install/install-local.sh",
             "install/install-server.sh",
         ):
             with self.subTest(relative=relative):
-                content = (ROOT / relative).read_text(encoding="utf-8")
+                installer = ROOT / relative
+                self.assertTrue(installer.is_file(), relative)
+                content = installer.read_text(encoding="utf-8")
                 self.assertIn("set -euo pipefail", content)
                 self.assertIn("--dry-run", content)
+
+    def test_host_kernel_installer_reports_and_validates_the_live_contract(
+        self,
+    ) -> None:
+        script = ROOT / "install" / "configure-host-kernel.sh"
+        accepted = subprocess.run(
+            ["bash", script, "--host", "remote-docker", "--dry-run"],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        unsafe = subprocess.run(
+            ["bash", script, "--host", "remote;touch", "--dry-run"],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        self.assertIn("remote-docker", accepted.stdout)
+        self.assertIn("fs.inotify.max_user_instances=8192", accepted.stdout)
+        self.assertIn("fs.inotify.max_user_watches=1048576", accepted.stdout)
+        self.assertIn("fs.inotify.max_queued_events=32768", accepted.stdout)
+        self.assertIn("without restarting Docker", accepted.stdout)
+        self.assertEqual(unsafe.returncode, 2)
+        self.assertIn("invalid host", unsafe.stderr)
 
     def test_server_installer_pins_and_verifies_downloads(self) -> None:
         content = (ROOT / "install/install-server.sh").read_text(encoding="utf-8")

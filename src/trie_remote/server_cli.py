@@ -31,6 +31,15 @@ from trie_remote.server_workspace import (
 )
 
 
+def _kernel_integer(relative_path: str) -> int | None:
+    """Read one integer from the Linux procfs sysctl hierarchy."""
+    try:
+        value = (Path("/proc/sys") / relative_path).read_text(encoding="utf-8")
+        return int(value.strip())
+    except (OSError, ValueError):
+        return None
+
+
 def _resource_pool(
     config: RunnerConfig,
     paths: ServerPaths,
@@ -394,6 +403,17 @@ def main(argv: list[str] | None = None) -> int:
             == "yes"
         )
         scheduler = _resource_pool(config, paths, store).snapshot()
+        inotify_max_user_instances = _kernel_integer("fs/inotify/max_user_instances")
+        inotify_max_user_watches = _kernel_integer("fs/inotify/max_user_watches")
+        inotify_max_queued_events = _kernel_integer("fs/inotify/max_queued_events")
+        inotify_ready = (
+            inotify_max_user_instances is not None
+            and inotify_max_user_instances >= 8192
+            and inotify_max_user_watches is not None
+            and inotify_max_user_watches >= 1048576
+            and inotify_max_queued_events is not None
+            and inotify_max_queued_events >= 32768
+        )
         report = {
             "reachable": True,
             "architecture": platform.machine(),
@@ -410,6 +430,10 @@ def main(argv: list[str] | None = None) -> int:
             "jq": version([str(paths.bin / "jq"), "--version"]),
             "systemd_user": version(["systemctl", "--user", "is-system-running"]),
             "systemd_linger": systemd_linger,
+            "inotify_max_user_instances": inotify_max_user_instances,
+            "inotify_max_user_watches": inotify_max_user_watches,
+            "inotify_max_queued_events": inotify_max_queued_events,
+            "inotify_ready": inotify_ready,
             "scheduler_capacity": scheduler["capacity"],
             "scheduler_held_permits": scheduler["held_permits"],
             "scheduler_queued_jobs": scheduler["queued_jobs"],
@@ -419,7 +443,12 @@ def main(argv: list[str] | None = None) -> int:
         }
         print(json.dumps(report, sort_keys=True))
         return (
-            0 if report["docker"] and report["systemd_user"] and systemd_linger else 1
+            0
+            if report["docker"]
+            and report["systemd_user"]
+            and systemd_linger
+            and inotify_ready
+            else 1
         )
 
     if arguments.command == "reserve":
