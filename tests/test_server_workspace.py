@@ -7,8 +7,13 @@ import subprocess
 import tempfile
 import unittest
 
+from trie_remote.job_store import JobSpec, OverlayManifest
 from trie_remote.server_paths import ServerPaths
-from trie_remote.server_workspace import ensure_bare_repository, prepare_workspace
+from trie_remote.server_workspace import (
+    ensure_bare_repository,
+    prepare_all_workspaces,
+    prepare_workspace,
+)
 
 
 def git(cwd: Path, *arguments: str) -> str:
@@ -83,6 +88,35 @@ class ServerWorkspaceTests(unittest.TestCase):
         )
         self.assertTrue((repeated / "deleted.txt").exists())
         self.assertFalse((repeated / "new.txt").exists())
+
+    def test_prepare_all_applies_reserved_deletions_idempotently(self) -> None:
+        workspace = self.paths.workspaces / "trie-vms/alpha/primary"
+        spec = JobSpec(
+            job_id="alpha",
+            repository="trie-vms",
+            workspace=str(workspace),
+            workspaces={"primary": str(workspace)},
+            includes={},
+            weight="light",
+            argv=("true",),
+            created_at="2026-08-25T00:00:00+00:00",
+            commits={"primary": self.commit},
+            overlays={
+                "primary": OverlayManifest(delete=("deleted.txt",)),
+            },
+        )
+
+        prepared = prepare_all_workspaces(self.paths, spec)
+        self.assertEqual(prepared, {"primary": workspace})
+        self.assertFalse((workspace / "deleted.txt").exists())
+        (workspace / "tracked.txt").write_text("dirty\n", encoding="utf-8")
+
+        repeated = prepare_all_workspaces(self.paths, spec)
+        self.assertEqual(
+            (repeated["primary"] / "tracked.txt").read_text(encoding="utf-8"),
+            "initial\n",
+        )
+        self.assertFalse((repeated["primary"] / "deleted.txt").exists())
 
     def test_rejects_unsafe_identifiers_before_creating_workspace(self) -> None:
         for job_id, role in (("../escape", "primary"), ("alpha", "../role")):

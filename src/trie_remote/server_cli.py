@@ -23,7 +23,11 @@ from trie_remote.port_policy import validate_compose_command
 from trie_remote.preview_registry import PreviewRegistry
 from trie_remote.scheduler import DiskGuard, ResourcePool, unit_is_inactive as _unit_is_inactive
 from trie_remote.server_paths import ServerPaths
-from trie_remote.server_workspace import ensure_bare_repository, prepare_workspace
+from trie_remote.server_workspace import (
+    ensure_bare_repository,
+    prepare_all_workspaces,
+    prepare_workspace,
+)
 
 
 def _resource_pool(
@@ -113,6 +117,9 @@ def build_parser() -> argparse.ArgumentParser:
     prepare_parser.add_argument("--repository", required=True)
     prepare_parser.add_argument("--commit", required=True)
     prepare_parser.add_argument("--role", required=True)
+
+    prepare_all_parser = subparsers.add_parser("prepare-all")
+    prepare_all_parser.add_argument("--job", required=True)
 
     workspace_parser = subparsers.add_parser("workspace-path")
     workspace_parser.add_argument("--job", required=True)
@@ -218,6 +225,23 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
+    if arguments.command == "prepare-all":
+        spec = store.load(arguments.job)
+        prepared = prepare_all_workspaces(paths, spec)
+        print(
+            json.dumps(
+                {
+                    "job_id": spec.job_id,
+                    "workspaces": {
+                        role: str(workspace)
+                        for role, workspace in prepared.items()
+                    },
+                },
+                sort_keys=True,
+            ),
+        )
+        return 0
+
     if arguments.command == "docker":
         docker_arguments = list(arguments.docker_arguments)
         if docker_arguments and docker_arguments[0] == "--":
@@ -306,8 +330,27 @@ def main(argv: list[str] | None = None) -> int:
     if arguments.command == "reserve":
         spec = JobSpec.from_dict(json.load(sys.stdin))
         _validate_spec(config, paths, spec)
+        repositories = {
+            "primary": spec.repository,
+            **dict(spec.includes),
+        }
+        mirrors = {
+            role: str(ensure_bare_repository(paths, repository))
+            for role, repository in repositories.items()
+        }
         store.create(spec)
-        print(json.dumps({"job_id": spec.job_id, "state": "preparing"}))
+        print(
+            json.dumps(
+                {
+                    "protocol_version": 2,
+                    "job_id": spec.job_id,
+                    "state": "preparing",
+                    "mirrors": mirrors,
+                    "workspaces": dict(spec.workspaces),
+                },
+                sort_keys=True,
+            ),
+        )
         return 0
 
     if arguments.command == "start":

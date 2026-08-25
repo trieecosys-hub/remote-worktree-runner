@@ -55,6 +55,7 @@ class JobSpec:
     weight: str
     argv: tuple[str, ...]
     created_at: str
+    commits: Mapping[str, str] = field(default_factory=dict)
     overlays: Mapping[str, OverlayManifest] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -70,6 +71,8 @@ class JobSpec:
             validate_identifier(role, "role")
         if not set(self.overlays).issubset(self.workspaces):
             raise ValueError("overlay roles must match workspaces")
+        if not set(self.commits).issubset(self.workspaces):
+            raise ValueError("commit roles must match workspaces")
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-compatible representation."""
@@ -98,6 +101,10 @@ class JobSpec:
             weight=str(value["weight"]),
             argv=tuple(str(item) for item in value["argv"]),
             created_at=str(value.get("created_at") or utc_now()),
+            commits={
+                str(role): str(commit)
+                for role, commit in dict(value.get("commits", {})).items()
+            },
             overlays={
                 str(role): OverlayManifest.from_dict(dict(manifest))
                 for role, manifest in dict(value.get("overlays", {})).items()

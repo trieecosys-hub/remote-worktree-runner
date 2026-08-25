@@ -24,6 +24,7 @@ class JobStoreTests(unittest.TestCase):
             weight="exclusive",
             argv=("true",),
             created_at="2026-08-25T00:00:00+00:00",
+            commits={"primary": "a" * 40},
             overlays={
                 "primary": OverlayManifest(
                     transfer=("src/changed.py",),
@@ -33,6 +34,7 @@ class JobStoreTests(unittest.TestCase):
         )
 
         self.assertEqual(JobSpec.from_dict(spec.to_dict()), spec)
+        self.assertEqual(spec.to_dict()["commits"], {"primary": "a" * 40})
         self.assertEqual(
             spec.to_dict()["overlays"]["primary"],
             {"transfer": ["src/changed.py"], "delete": ["src/removed.py"]},

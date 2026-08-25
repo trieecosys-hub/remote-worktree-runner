@@ -15,7 +15,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from trie_remote.job_store import JobSpec, JobStore
+from trie_remote.job_store import JobSpec, JobStore, OverlayManifest
 from trie_remote.job_worker import run_job
 from trie_remote.preview import PreviewRoute
 from trie_remote.scheduler import DiskGuard, ResourcePool, SchedulerCancelled
@@ -24,6 +24,50 @@ from trie_remote.server_paths import ServerPaths
 
 
 class JobLifecycleTests(unittest.TestCase):
+    def test_reserve_describes_all_mirrors_and_workspaces(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "root"
+            workspaces = {
+                "primary": str(root / "workspaces/trie-space/batch/primary"),
+                "process": str(root / "workspaces/trie-process/batch/process"),
+            }
+            spec = JobSpec(
+                job_id="batch",
+                repository="trie-space",
+                workspace=workspaces["primary"],
+                workspaces=workspaces,
+                includes={"process": "trie-process"},
+                weight="light",
+                argv=("true",),
+                created_at="2026-08-25T00:00:00+00:00",
+                commits={"primary": "a" * 40, "process": "b" * 40},
+            )
+            environment = {
+                "REMOTE_RUNNER_ROOT": str(root),
+                "REMOTE_RUNNER_ALLOWED_REPOSITORIES": "trie-space,trie-process",
+            }
+            output = StringIO()
+            with (
+                patch.dict(os.environ, environment, clear=True),
+                patch("sys.stdin", StringIO(json.dumps(spec.to_dict()))),
+                redirect_stdout(output),
+            ):
+                result = server_main(["reserve"])
+
+            response = json.loads(output.getvalue())
+            self.assertEqual(result, 0)
+            self.assertEqual(response["protocol_version"], 2)
+            self.assertEqual(response["workspaces"], workspaces)
+            self.assertEqual(
+                response["mirrors"],
+                {
+                    "primary": str(root.resolve() / "repos/trie-space.git"),
+                    "process": str(root.resolve() / "repos/trie-process.git"),
+                },
+            )
+            self.assertTrue((root / "repos/trie-space.git/HEAD").is_file())
+            self.assertTrue((root / "repos/trie-process.git/HEAD").is_file())
+
     def test_doctor_requires_systemd_linger(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "root"

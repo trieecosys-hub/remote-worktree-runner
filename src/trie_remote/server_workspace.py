@@ -7,6 +7,8 @@ import re
 import subprocess
 
 from trie_remote.common import ensure_below, validate_identifier
+from trie_remote.job_store import JobSpec, OverlayManifest
+from trie_remote.overlay import apply_overlay_deletions
 from trie_remote.server_paths import ServerPaths
 
 
@@ -93,3 +95,29 @@ def prepare_workspace(
         commit,
     )
     return workspace
+
+
+def prepare_all_workspaces(
+    paths: ServerPaths,
+    spec: JobSpec,
+) -> dict[str, Path]:
+    """Prepare every reserved role and apply its immutable deletion set."""
+    if set(spec.commits) != set(spec.workspaces):
+        raise ValueError("prepare-all requires one commit per workspace role")
+    prepared: dict[str, Path] = {}
+    for role in sorted(spec.workspaces):
+        repository = spec.repository if role == "primary" else spec.includes[role]
+        workspace = prepare_workspace(
+            paths,
+            spec.job_id,
+            repository,
+            spec.commits[role],
+            role,
+        )
+        expected = Path(spec.workspaces[role]).resolve()
+        if workspace != expected:
+            raise ValueError(f"prepared workspace changed for role: {role}")
+        manifest = spec.overlays.get(role, OverlayManifest())
+        apply_overlay_deletions(workspace, manifest.delete)
+        prepared[role] = workspace
+    return prepared
