@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict
 import json
 import os
-from pathlib import Path
+import platform
 import shutil
 import subprocess
 import sys
 import time
-import platform
+from dataclasses import asdict
+from pathlib import Path
 
 from trie_remote.common import ensure_below, validate_identifier
 from trie_remote.config import RunnerConfig
@@ -21,7 +21,8 @@ from trie_remote.job_store import FINAL_STATES, JobSpec, JobStore, utc_now
 from trie_remote.job_worker import run_job
 from trie_remote.port_policy import validate_compose_command
 from trie_remote.preview_registry import PreviewRegistry
-from trie_remote.scheduler import DiskGuard, ResourcePool, unit_is_inactive as _unit_is_inactive
+from trie_remote.scheduler import DiskGuard, ResourcePool
+from trie_remote.scheduler import unit_is_inactive as _unit_is_inactive
 from trie_remote.server_paths import ServerPaths
 from trie_remote.server_workspace import (
     ensure_bare_repository,
@@ -104,6 +105,93 @@ def _missing_job(job_id: str) -> dict[str, object]:
     return {"job_id": job_id, "state": "not-found", "retryable": True}
 
 
+def _start_job(
+    config: RunnerConfig,
+    paths: ServerPaths,
+    store: JobStore,
+    spec: JobSpec,
+) -> dict[str, object]:
+    """Admit one prepared job and launch its reconnectable worker."""
+    reserved = store.exists(spec.job_id)
+    if reserved:
+        if store.load(spec.job_id) != spec:
+            raise ValueError("job reservation does not match start request")
+        status = store.status(spec.job_id)
+        if status["state"] != "preparing":
+            if status["state"] in FINAL_STATES:
+                return status
+            raise ValueError("only a preparing job can be started")
+    guard = DiskGuard(
+        config.minimum_free_gib,
+        config.warning_free_gib,
+        config.cancellation_free_gib,
+    )
+    free_bytes = guard.admit(paths.root, spec.weight)
+    if not reserved:
+        store.create(spec)
+    unit = f"trie-job-{spec.job_id}"
+    status = store.transition(
+        spec.job_id,
+        "queued",
+        unit=unit,
+        admitted_free_bytes=free_bytes,
+    )
+    runner = str(paths.bin / "trie-runner")
+    try:
+        subprocess.run(
+            [
+                "systemd-run",
+                "--user",
+                "--unit",
+                unit,
+                "--collect",
+                "--quiet",
+                runner,
+                "worker",
+                "--job",
+                spec.job_id,
+            ],
+            check=True,
+        )
+    except subprocess.CalledProcessError:
+        store.transition(spec.job_id, "cancelled", reason="systemd start failed")
+        raise
+    return {**status, "job_id": spec.job_id, "unit": unit}
+
+
+def _execute_job(
+    config: RunnerConfig,
+    paths: ServerPaths,
+    store: JobStore,
+    job_id: str,
+) -> int:
+    """Start if needed, stream logs, and return the exact final exit code."""
+    spec = store.load(job_id)
+    status = store.status(job_id)
+    if status["state"] == "preparing":
+        status = _start_job(config, paths, store, spec)
+
+    log_path = store.log_path(job_id)
+    position = 0
+    while True:
+        with log_path.open("r", encoding="utf-8", errors="replace") as stream:
+            stream.seek(position)
+            content = stream.read()
+            position = stream.tell()
+        if content:
+            print(content, end="", flush=True, file=sys.stderr)
+        status = store.status(job_id)
+        if status["state"] in FINAL_STATES:
+            print(json.dumps(status, sort_keys=True))
+            return int(
+                status.get(
+                    "exit_code",
+                    0 if status["state"] == "passed" else 1,
+                ),
+            )
+        time.sleep(1)
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the server CLI parser."""
     parser = argparse.ArgumentParser(prog="trie-runner")
@@ -132,6 +220,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("reserve")
     subparsers.add_parser("start")
+
+    execute_parser = subparsers.add_parser("execute")
+    execute_parser.add_argument("--job", required=True)
 
     worker_parser = subparsers.add_parser("worker")
     worker_parser.add_argument("--job", required=True)
@@ -233,8 +324,7 @@ def main(argv: list[str] | None = None) -> int:
                 {
                     "job_id": spec.job_id,
                     "workspaces": {
-                        role: str(workspace)
-                        for role, workspace in prepared.items()
+                        role: str(workspace) for role, workspace in prepared.items()
                     },
                 },
                 sort_keys=True,
@@ -287,15 +377,18 @@ def main(argv: list[str] | None = None) -> int:
                 return None
             return (result.stdout or result.stderr).strip().splitlines()[0]
 
-        systemd_linger = version(
-            [
-                "/usr/bin/loginctl",
-                "show-user",
-                str(os.getuid()),
-                "--property=Linger",
-                "--value",
-            ],
-        ) == "yes"
+        systemd_linger = (
+            version(
+                [
+                    "/usr/bin/loginctl",
+                    "show-user",
+                    str(os.getuid()),
+                    "--property=Linger",
+                    "--value",
+                ],
+            )
+            == "yes"
+        )
         scheduler = _resource_pool(config, paths, store).snapshot()
         report = {
             "reachable": True,
@@ -322,9 +415,7 @@ def main(argv: list[str] | None = None) -> int:
         }
         print(json.dumps(report, sort_keys=True))
         return (
-            0
-            if report["docker"] and report["systemd_user"] and systemd_linger
-            else 1
+            0 if report["docker"] and report["systemd_user"] and systemd_linger else 1
         )
 
     if arguments.command == "reserve":
@@ -356,49 +447,12 @@ def main(argv: list[str] | None = None) -> int:
     if arguments.command == "start":
         spec = JobSpec.from_dict(json.load(sys.stdin))
         _validate_spec(config, paths, spec)
-        reserved = store.exists(spec.job_id)
-        if reserved:
-            if store.load(spec.job_id) != spec:
-                raise ValueError("job reservation does not match start request")
-            if store.status(spec.job_id)["state"] != "preparing":
-                raise ValueError("only a preparing job can be started")
-        guard = DiskGuard(
-            config.minimum_free_gib,
-            config.warning_free_gib,
-            config.cancellation_free_gib,
-        )
-        free_bytes = guard.admit(paths.root, spec.weight)
-        if not reserved:
-            store.create(spec)
-        unit = f"trie-job-{spec.job_id}"
-        store.transition(
-            spec.job_id,
-            "queued",
-            unit=unit,
-            admitted_free_bytes=free_bytes,
-        )
-        runner = str(paths.bin / "trie-runner")
-        try:
-            subprocess.run(
-                [
-                    "systemd-run",
-                    "--user",
-                    "--unit",
-                    unit,
-                    "--collect",
-                    "--quiet",
-                    runner,
-                    "worker",
-                    "--job",
-                    spec.job_id,
-                ],
-                check=True,
-            )
-        except subprocess.CalledProcessError:
-            store.transition(spec.job_id, "cancelled", reason="systemd start failed")
-            raise
-        print(json.dumps({"job_id": spec.job_id, "state": "queued", "unit": unit}))
+        status = _start_job(config, paths, store, spec)
+        print(json.dumps(status, sort_keys=True))
         return 0
+
+    if arguments.command == "execute":
+        return _execute_job(config, paths, store, arguments.job)
 
     if arguments.command == "worker":
         return run_job(paths, arguments.job)

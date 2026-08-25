@@ -2,10 +2,6 @@
 
 from __future__ import annotations
 
-from contextlib import redirect_stdout
-from dataclasses import asdict
-from io import StringIO
-from pathlib import Path
 import json
 import os
 import subprocess
@@ -13,9 +9,13 @@ import tempfile
 import threading
 import time
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
+from dataclasses import asdict
+from io import StringIO
+from pathlib import Path
 from unittest.mock import patch
 
-from trie_remote.job_store import JobSpec, JobStore, OverlayManifest
+from trie_remote.job_store import JobSpec, JobStore
 from trie_remote.job_worker import run_job
 from trie_remote.preview import PreviewRoute
 from trie_remote.scheduler import DiskGuard, ResourcePool, SchedulerCancelled
@@ -24,6 +24,91 @@ from trie_remote.server_paths import ServerPaths
 
 
 class JobLifecycleTests(unittest.TestCase):
+    def test_execute_streams_logs_to_stderr_and_final_status_to_stdout(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "root"
+            paths = ServerPaths.from_root(root)
+            paths.create()
+            workspace = root / "workspaces/trie-space/stream/primary"
+            spec = JobSpec(
+                job_id="stream",
+                repository="trie-space",
+                workspace=str(workspace),
+                workspaces={"primary": str(workspace)},
+                includes={},
+                weight="light",
+                argv=("true",),
+                created_at="2026-08-25T00:00:00+00:00",
+            )
+            store = JobStore(paths)
+            store.create(spec)
+
+            def start_job(*_args: object) -> dict[str, object]:
+                store.transition("stream", "queued", unit="trie-job-stream")
+                store.transition("stream", "running", pid=123, started_at=time.time())
+                store.log_path("stream").write_text("stream marker\n", encoding="utf-8")
+                return store.finish("stream", 0)
+
+            stdout = StringIO()
+            stderr = StringIO()
+            environment = {
+                "REMOTE_RUNNER_ROOT": str(root),
+                "REMOTE_RUNNER_ALLOWED_REPOSITORIES": "trie-space",
+            }
+            with (
+                patch.dict(os.environ, environment, clear=True),
+                patch("trie_remote.server_cli._start_job", side_effect=start_job),
+                redirect_stdout(stdout),
+                redirect_stderr(stderr),
+            ):
+                result = server_main(["execute", "--job", "stream"])
+
+            self.assertEqual(result, 0)
+            self.assertIn("stream marker", stderr.getvalue())
+            self.assertEqual(json.loads(stdout.getvalue())["state"], "passed")
+
+    def test_execute_returns_a_preparing_job_cancelled_during_transfer(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "root"
+            paths = ServerPaths.from_root(root)
+            paths.create()
+            workspace = root / "workspaces/trie-space/cancelled/primary"
+            spec = JobSpec(
+                job_id="cancelled",
+                repository="trie-space",
+                workspace=str(workspace),
+                workspaces={"primary": str(workspace)},
+                includes={},
+                weight="light",
+                argv=("true",),
+                created_at="2026-08-25T00:00:00+00:00",
+            )
+            store = JobStore(paths)
+            store.create(spec)
+            store.transition(
+                "cancelled",
+                "cancelled",
+                exit_code=130,
+                reason="cancelled before worker start",
+                finished_at="2026-08-25T00:00:01+00:00",
+            )
+
+            output = StringIO()
+            environment = {
+                "REMOTE_RUNNER_ROOT": str(root),
+                "REMOTE_RUNNER_ALLOWED_REPOSITORIES": "trie-space",
+            }
+            with (
+                patch.dict(os.environ, environment, clear=True),
+                patch("trie_remote.server_cli._start_job") as start_job,
+                redirect_stdout(output),
+            ):
+                result = server_main(["execute", "--job", "cancelled"])
+
+            self.assertEqual(result, 130)
+            self.assertEqual(json.loads(output.getvalue())["state"], "cancelled")
+            start_job.assert_not_called()
+
     def test_reserve_describes_all_mirrors_and_workspaces(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "root"
@@ -80,11 +165,7 @@ class JobLifecycleTests(unittest.TestCase):
                 command: list[str],
                 **_kwargs: object,
             ) -> subprocess.CompletedProcess[str]:
-                output = (
-                    "no\n"
-                    if command[0] == "/usr/bin/loginctl"
-                    else "available\n"
-                )
+                output = "no\n" if command[0] == "/usr/bin/loginctl" else "available\n"
                 return subprocess.CompletedProcess(command, 0, stdout=output, stderr="")
 
             output = StringIO()
@@ -113,11 +194,7 @@ class JobLifecycleTests(unittest.TestCase):
                 command: list[str],
                 **_kwargs: object,
             ) -> subprocess.CompletedProcess[str]:
-                output = (
-                    "yes\n"
-                    if command[0] == "/usr/bin/loginctl"
-                    else "available\n"
-                )
+                output = "yes\n" if command[0] == "/usr/bin/loginctl" else "available\n"
                 return subprocess.CompletedProcess(command, 0, stdout=output, stderr="")
 
             output = StringIO()
@@ -166,7 +243,7 @@ class JobLifecycleTests(unittest.TestCase):
             def wait() -> None:
                 try:
                     pool.wait("queued", "heavy", cancelled.is_set)
-                except BaseException as error:
+                except BaseException as error:  # noqa: BLE001
                     waiter_errors.append(type(error))
 
             thread = threading.Thread(target=wait)

@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import subprocess
+import unittest
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
-import subprocess
-import unittest
 from unittest.mock import patch
 
+from trie_remote.job_store import OverlayManifest
 from trie_remote.local_cli import (
     build_parser,
     main,
@@ -16,6 +17,7 @@ from trie_remote.local_cli import (
     validate_requested_command,
 )
 from trie_remote.repository import RepositoryState
+from trie_remote.transport import ExecutionResult, Reservation
 
 
 class FakeTransport:
@@ -34,35 +36,49 @@ class WorkflowTransport:
         self.events: list[tuple[str, object]] = []
         self.fail_push = fail_push
 
-    def workspace_path(
-        self,
-        state: RepositoryState,
-        job_id: str,
-        role: str,
-    ) -> str:
-        self.events.append(("workspace-path", role))
-        return f"/srv/trie-platform/workspaces/{state.name}/{job_id}/{role}"
+    remote_root = Path("/srv/trie-platform")
+    exclude_file = Path("/tmp/sync-excludes.txt")
 
-    def push_commit(self, _state: RepositoryState, _job_id: str, role: str) -> None:
+    def reserve(self, spec: object) -> Reservation:
+        self.events.append(("reserve", spec))
+        return Reservation(
+            protocol_version=2,
+            mirrors={"primary": "/srv/trie-platform/repos/trie-space.git"},
+            workspaces={
+                "primary": "/srv/trie-platform/workspaces/trie-space/alpha/primary",
+            },
+        )
+
+    def push_commit(
+        self,
+        _state: RepositoryState,
+        _job_id: str,
+        role: str,
+        *,
+        ensure_repository: bool = True,
+    ) -> None:
         self.events.append(("push", role))
         if self.fail_push:
             raise RuntimeError("push failed")
 
-    def prepare_workspace(
-        self,
-        state: RepositoryState,
-        job_id: str,
-        role: str,
-    ) -> str:
-        self.events.append(("prepare", role))
-        return f"/srv/trie-platform/workspaces/{state.name}/{job_id}/{role}"
+    def prepare_all(self, job_id: str) -> dict[str, str]:
+        self.events.append(("prepare-all", job_id))
+        return {
+            "primary": "/srv/trie-platform/workspaces/trie-space/alpha/primary",
+        }
 
     def sync_overlay(
         self,
         _state: RepositoryState,
         remote_workspace: str,
+        manifest: OverlayManifest,
     ) -> None:
-        self.events.append(("sync", remote_workspace))
+        if manifest.transfer:
+            self.events.append(("sync", remote_workspace))
+
+    def execute(self, job_id: str) -> ExecutionResult:
+        self.events.append(("execute", job_id))
+        return ExecutionResult(0, {"state": "passed", "exit_code": 0})
 
     def ssh(
         self,
@@ -108,6 +124,14 @@ class LocalCliTests(unittest.TestCase):
         self.assertEqual(arguments.job, "alpha")
         self.assertEqual(arguments.include, ["process=/tmp/trie process"])
         self.assertEqual(arguments.command_arguments, ["--", "bash", "script.sh"])
+        self.assertEqual(
+            build_parser()
+            .parse_args(
+                ["run", "--job", "exclusive", "--weight", "exclusive", "--", "true"],
+            )
+            .weight,
+            "exclusive",
+        )
 
     def test_has_reconnect_and_doctor_commands(self) -> None:
         parser = build_parser()
@@ -221,6 +245,10 @@ class LocalCliTests(unittest.TestCase):
                 "trie_remote.local_cli.RepositoryState.discover",
                 return_value=self.state,
             ),
+            patch(
+                "trie_remote.local_cli.RepositoryState.overlay",
+                return_value=OverlayManifest(),
+            ),
             redirect_stdout(StringIO()),
         ):
             result = run_worktrees(
@@ -236,6 +264,10 @@ class LocalCliTests(unittest.TestCase):
         event_names = [event[0] for event in transport.events]
         self.assertLess(event_names.index("reserve"), event_names.index("push"))
         self.assertEqual(event_names.count("reserve"), 1)
+        self.assertEqual(
+            event_names,
+            ["reserve", "push", "prepare-all", "execute"],
+        )
 
     def test_transfer_failure_cancels_the_preparing_job(self) -> None:
         transport = WorkflowTransport(fail_push=True)
@@ -243,6 +275,10 @@ class LocalCliTests(unittest.TestCase):
             patch(
                 "trie_remote.local_cli.RepositoryState.discover",
                 return_value=self.state,
+            ),
+            patch(
+                "trie_remote.local_cli.RepositoryState.overlay",
+                return_value=OverlayManifest(),
             ),
             self.assertRaisesRegex(RuntimeError, "push failed"),
         ):
@@ -257,7 +293,7 @@ class LocalCliTests(unittest.TestCase):
 
         self.assertEqual(
             [event[0] for event in transport.events],
-            ["workspace-path", "reserve", "push", "cancel"],
+            ["reserve", "push", "cancel"],
         )
 
     def test_status_and_cancel_preserve_structured_missing_job_response(self) -> None:

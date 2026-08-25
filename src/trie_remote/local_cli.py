@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
 import json
 import os
-from pathlib import Path
 import shutil
 import subprocess
 import sys
+from datetime import datetime, timezone
+from pathlib import Path
 
 from trie_remote.common import validate_identifier
 from trie_remote.config import RunnerConfig
@@ -25,7 +25,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     run_parser = subparsers.add_parser("run")
     run_parser.add_argument("--job", required=True)
-    run_parser.add_argument("--weight", choices=("light", "heavy"), default="heavy")
+    run_parser.add_argument(
+        "--weight",
+        choices=("light", "heavy", "exclusive"),
+        default="heavy",
+    )
     run_parser.add_argument("--include", action="append", default=[])
     run_parser.add_argument("command_arguments", nargs=argparse.REMAINDER)
 
@@ -74,15 +78,19 @@ def validate_requested_command(argv: list[str]) -> None:
         raise ValueError(f"remote daemon control is not allowed: {command}")
     if any("docker.sock" in value for value in argv):
         raise ValueError("direct Docker socket access is not allowed")
-    if command == "docker" and len(argv) >= 3:
-        if tuple(argv[1:3]) in {
+    if (
+        command == "docker"
+        and len(argv) >= 3
+        and tuple(argv[1:3])
+        in {
             ("system", "prune"),
             ("volume", "prune"),
             ("builder", "prune"),
             ("context", "rm"),
             ("swarm", "leave"),
-        }:
-            raise ValueError("daemon-wide Docker operation is not allowed")
+        }
+    ):
+        raise ValueError("daemon-wide Docker operation is not allowed")
 
 
 def _parse_includes(values: list[str]) -> dict[str, Path]:
@@ -132,8 +140,11 @@ def run_worktrees(
         {role: RepositoryState.discover(path) for role, path in includes.items()}
     )
     remote_workspaces = {
-        role: transport.workspace_path(state, job_id, role)
+        role: str(transport.remote_root / "workspaces" / state.name / job_id / role)
         for role, state in states.items()
+    }
+    overlays = {
+        role: state.overlay(transport.exclude_file) for role, state in states.items()
     }
     include_repositories: dict[str, str] = {}
     for role, state in states.items():
@@ -149,22 +160,37 @@ def run_worktrees(
         weight=weight,
         argv=tuple(argv),
         created_at=datetime.now(timezone.utc).isoformat(),
+        commits={role: state.commit for role, state in states.items()},
+        overlays=overlays,
     )
-    transport.ssh(
-        ["reserve"],
-        input_bytes=json.dumps(spec.to_dict()).encode(),
-    )
+    reservation = transport.reserve(spec)
     try:
+        if reservation.protocol_version >= 2:
+            if dict(reservation.workspaces) != remote_workspaces:
+                raise ValueError("server reservation returned unexpected workspaces")
+            for role, state in states.items():
+                transport.push_commit(
+                    state,
+                    job_id,
+                    role,
+                    ensure_repository=False,
+                )
+            prepared = transport.prepare_all(job_id)
+            if prepared != remote_workspaces:
+                raise ValueError("server prepared unexpected workspaces")
+            for role, state in states.items():
+                transport.sync_overlay(state, prepared[role], overlays[role])
+            execution = transport.execute(job_id)
+            print(json.dumps(execution.status, indent=2, sort_keys=True))
+            return execution.returncode
+
         for role, state in states.items():
             transport.push_commit(state, job_id, role)
             workspace = transport.prepare_workspace(state, job_id, role)
             if workspace != remote_workspaces[role]:
                 raise ValueError(f"server workspace changed for role: {role}")
-            transport.sync_overlay(state, workspace)
-        transport.ssh(
-            ["start"],
-            input_bytes=json.dumps(spec.to_dict()).encode(),
-        )
+            transport.sync_full_overlay(state, workspace)
+        transport.ssh(["start"], input_bytes=json.dumps(spec.to_dict()).encode())
     except (Exception, KeyboardInterrupt):
         try:
             cancellation = transport.ssh(["cancel", job_id], check=False)
@@ -174,7 +200,7 @@ def run_worktrees(
                     f"{cancellation.returncode}: {job_id}",
                     file=sys.stderr,
                 )
-        except Exception as cancellation_error:
+        except Exception as cancellation_error:  # noqa: BLE001
             print(
                 f"trie-run: could not cancel preparing job {job_id}: "
                 f"{cancellation_error}",
