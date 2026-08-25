@@ -12,25 +12,28 @@ heavy_two="runner-heavy-two-$stamp"
 exclusive="runner-exclusive-$stamp"
 fixture_jobs=("$heavy_one" "$heavy_two" "$exclusive")
 started_jobs=()
+cleanup_needed=false
 stage=$(mktemp -d)
 
 cleanup() {
   local fixture_job
-  for fixture_job in "${started_jobs[@]}"; do
-    "$trie_run" cancel "$fixture_job" >/dev/null 2>&1 || true
-  done
-  for fixture_job in "${started_jobs[@]}"; do
-    local deadline=$((SECONDS + 30))
-    while (( SECONDS < deadline )); do
-      local state
-      state=$("$trie_run" status "$fixture_job" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin).get("state", ""))' 2>/dev/null || true)
-      case "$state" in
-        passed|failed|cancelled|not-found) break ;;
-      esac
-      sleep 1
+  if $cleanup_needed; then
+    for fixture_job in "${started_jobs[@]}"; do
+      "$trie_run" cancel "$fixture_job" >/dev/null 2>&1 || true
     done
-    "$trie_run" cleanup "$fixture_job" --volumes >/dev/null 2>&1 || true
-  done
+    for fixture_job in "${started_jobs[@]}"; do
+      local deadline=$((SECONDS + 30))
+      while (( SECONDS < deadline )); do
+        local state
+        state=$("$trie_run" status "$fixture_job" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin).get("state", ""))' 2>/dev/null || true)
+        case "$state" in
+          passed|failed|cancelled|not-found) break ;;
+        esac
+        sleep 1
+      done
+      "$trie_run" cleanup "$fixture_job" --volumes >/dev/null 2>&1 || true
+    done
+  fi
   rm -rf "$stage"
 }
 trap cleanup EXIT
@@ -49,6 +52,7 @@ ssh "$host" 'test "$(uname -m)" = x86_64'
 ssh "$host" '/usr/bin/docker version --format "server={{.Server.Version}}/{{.Server.Arch}}"'
 
 cd "$root"
+cleanup_needed=true
 started_jobs+=("$heavy_one")
 "$trie_run" run --job "$heavy_one" --weight heavy -- bash -lc 'sleep 8' \
   >"$stage/$heavy_one.run" 2>&1 &
@@ -121,7 +125,7 @@ PY
 for fixture_job in "${fixture_jobs[@]}"; do
   "$trie_run" cleanup "$fixture_job" --volumes
 done
-started_jobs=()
+cleanup_needed=false
 
 for fixture_job in "${fixture_jobs[@]}"; do
   resource="trie-$repository-$fixture_job"
