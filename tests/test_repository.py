@@ -47,6 +47,15 @@ class RepositoryStateTests(unittest.TestCase):
         self.assertEqual(state.branch, "main")
         self.assertTrue(state.dirty)
 
+    def test_overlay_uses_the_discovered_worktree(self) -> None:
+        excludes = self.base / "excludes.txt"
+        excludes.write_text("- .git\n", encoding="utf-8")
+        (self.repository / "tracked.txt").write_text("changed\n", encoding="utf-8")
+
+        state = RepositoryState.discover(self.repository)
+
+        self.assertEqual(state.overlay(excludes).transfer, ("tracked.txt",))
+
     def test_linked_worktree_keeps_product_repository_name(self) -> None:
         linked = self.base / "feature-worktree"
         git(self.repository, "worktree", "add", "-b", "feature/test", str(linked))

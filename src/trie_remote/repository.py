@@ -8,6 +8,8 @@ from pathlib import Path
 import subprocess
 
 from trie_remote.config import DEFAULT_REPOSITORIES
+from trie_remote.job_store import OverlayManifest
+from trie_remote.overlay import discover_overlay
 
 
 def _git(cwd: Path, *arguments: str) -> str:
@@ -62,3 +64,6 @@ class RepositoryState:
             dirty=bool(_git(root, "status", "--porcelain=v1")),
         )
 
+    def overlay(self, exclude_file: Path) -> OverlayManifest:
+        """Return the sparse local changes above this state's exact commit."""
+        return discover_overlay(self.root, exclude_file)
