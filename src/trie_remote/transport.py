@@ -31,6 +31,15 @@ class ExecutionResult:
     status: dict[str, Any]
 
 
+class ExecutionStreamDetached(RuntimeError):
+    """Report an SSH execution stream that ended without a final status."""
+
+    def __init__(self, job_id: str, returncode: int) -> None:
+        super().__init__(f"execution stream detached for job {job_id}")
+        self.job_id = job_id
+        self.returncode = returncode
+
+
 class Transport:
     """Construct exact local process calls for one configured server."""
 
@@ -228,7 +237,10 @@ class Transport:
             stdout=subprocess.PIPE,
             check=False,
         )
-        response = self._json_output(result)
+        try:
+            response = self._json_output(result)
+        except (json.JSONDecodeError, TypeError, ValueError) as error:
+            raise ExecutionStreamDetached(job_id, int(result.returncode)) from error
         return ExecutionResult(int(result.returncode), response)
 
     @staticmethod

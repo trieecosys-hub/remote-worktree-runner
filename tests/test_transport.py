@@ -8,7 +8,7 @@ from pathlib import Path
 
 from trie_remote.job_store import JobSpec, OverlayManifest
 from trie_remote.repository import RepositoryState
-from trie_remote.transport import Reservation, Transport
+from trie_remote.transport import ExecutionStreamDetached, Reservation, Transport
 
 
 class RecordingRunner:
@@ -193,6 +193,41 @@ class TransportTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertEqual(result.status, {"state": "passed", "exit_code": 0})
         self.assertEqual(self.runner.calls[-1][0][-3:], ["execute", "--job", "alpha"])
+
+    def test_execute_reports_a_detached_stream_when_ssh_returns_no_status(self) -> None:
+        def detached_runner(
+            argv: list[str], **_kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(argv, 255, stdout="", stderr="")
+
+        transport = Transport(
+            ssh_alias="trie-docker",
+            remote_root=Path("/srv/trie-platform"),
+            exclude_file=Path("/tmp/sync-excludes.txt"),
+            run=detached_runner,
+        )
+
+        with self.assertRaises(ExecutionStreamDetached) as raised:
+            transport.execute("alpha")
+
+        self.assertEqual(raised.exception.job_id, "alpha")
+        self.assertEqual(raised.exception.returncode, 255)
+
+    def test_execute_reports_a_detached_stream_for_an_incomplete_status(self) -> None:
+        def detached_runner(
+            argv: list[str], **_kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(argv, 255, stdout="{", stderr="")
+
+        transport = Transport(
+            ssh_alias="trie-docker",
+            remote_root=Path("/srv/trie-platform"),
+            exclude_file=Path("/tmp/sync-excludes.txt"),
+            run=detached_runner,
+        )
+
+        with self.assertRaises(ExecutionStreamDetached):
+            transport.execute("alpha")
 
 
 if __name__ == "__main__":

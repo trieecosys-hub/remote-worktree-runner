@@ -15,7 +15,7 @@ from trie_remote.common import validate_identifier
 from trie_remote.config import RunnerConfig
 from trie_remote.job_store import FINAL_STATES, JobSpec
 from trie_remote.repository import RepositoryState
-from trie_remote.transport import Transport
+from trie_remote.transport import ExecutionStreamDetached, Transport
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -207,6 +207,15 @@ def run_worktrees(
     if reservation.protocol_version >= 2:
         try:
             execution = transport.execute(job_id)
+        except ExecutionStreamDetached as error:
+            print(
+                f"trie-run: execution stream detached (SSH exit "
+                f"{error.returncode}); job {job_id} continues on server. "
+                f"Reconnect with `trie-run status {job_id}` or "
+                f"`trie-run logs -f {job_id}`",
+                file=sys.stderr,
+            )
+            return 130
         except KeyboardInterrupt:
             print(
                 f"\nExecution stream interrupted; job {job_id} continues on server",
