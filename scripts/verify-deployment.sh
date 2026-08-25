@@ -20,6 +20,15 @@ cleanup() {
     "$trie_run" cancel "$fixture_job" >/dev/null 2>&1 || true
   done
   for fixture_job in "${started_jobs[@]}"; do
+    local deadline=$((SECONDS + 30))
+    while (( SECONDS < deadline )); do
+      local state
+      state=$("$trie_run" status "$fixture_job" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin).get("state", ""))' 2>/dev/null || true)
+      case "$state" in
+        passed|failed|cancelled|not-found) break ;;
+      esac
+      sleep 1
+    done
     "$trie_run" cleanup "$fixture_job" --volumes >/dev/null 2>&1 || true
   done
   rm -rf "$stage"
