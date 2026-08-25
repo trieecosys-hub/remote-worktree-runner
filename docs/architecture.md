@@ -42,7 +42,13 @@ Cleanup brings down only recorded Compose projects, optionally removes their nam
 
 ## Scheduling and capacity
 
-A filesystem lock admits one heavy job at a time. Default thresholds require 100 GiB free to admit a heavy job, warn below 80 GiB, and request cancellation below 60 GiB. These values are configurable through environment variables.
+A durable FIFO queue admits heavy jobs into a configurable pool of
+kernel-backed permits. An exclusive job waits for and acquires every permit,
+while ordinary heavy jobs acquire one. Permit locks are released by the kernel
+if a worker exits. Default disk thresholds require 100 GiB free to admit heavy
+or exclusive work, warn below 80 GiB, and request cancellation below 60 GiB.
+These values and the permit count are configurable through environment
+variables.
 
 ## Multi-worktree jobs
 

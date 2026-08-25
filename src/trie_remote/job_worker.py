@@ -10,8 +10,13 @@ import time
 
 from trie_remote.config import RunnerConfig
 from trie_remote.job_environment import create_job_environment, ensure_job_builder
-from trie_remote.job_store import JobStore
-from trie_remote.scheduler import DiskGuard, HeavyJobLease
+from trie_remote.job_store import JobStore, utc_now
+from trie_remote.scheduler import (
+    DiskGuard,
+    ResourcePool,
+    SchedulerCancelled,
+    unit_is_inactive,
+)
 from trie_remote.server_paths import ServerPaths
 
 
@@ -31,9 +36,31 @@ def run_job(
         config.warning_free_gib,
         config.cancellation_free_gib,
     )
-    lease = HeavyJobLease(paths.locks / "heavy.lock", job_id) if spec.weight == "heavy" else None
-    if lease is not None:
-        lease.acquire()
+    cancellation = store.job_directory(job_id) / "cancel.requested"
+    pool = ResourcePool(
+        paths.locks / "heavy-pool",
+        config.max_heavy_jobs,
+        store,
+        lambda queued_job: unit_is_inactive(
+            str(
+                store.status(queued_job).get(
+                    "unit",
+                    f"trie-job-{queued_job}",
+                ),
+            ),
+        ),
+    )
+    try:
+        lease = pool.wait(job_id, spec.weight, cancellation.exists)
+    except SchedulerCancelled:
+        store.transition(
+            job_id,
+            "cancelled",
+            exit_code=130,
+            reason="cancelled while queued",
+            finished_at=utc_now(),
+        )
+        return 130
     try:
         environment = {**os.environ, **create_job_environment(paths, spec)}
         if create_builder:
@@ -48,7 +75,6 @@ def run_job(
                 ),
             )
         store.transition(job_id, "running", pid=os.getpid(), started_at=time.time())
-        cancellation = store.job_directory(job_id) / "cancel.requested"
         with store.log_path(job_id).open("ab", buffering=0) as log:
             try:
                 process = subprocess.Popen(
@@ -92,5 +118,4 @@ def run_job(
         store.finish(job_id, exit_code)
         return exit_code
     finally:
-        if lease is not None:
-            lease.release()
+        lease.release()

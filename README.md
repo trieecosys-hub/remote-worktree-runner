@@ -73,6 +73,7 @@ Configure the client shell to match the server installation:
 export REMOTE_RUNNER_SSH_ALIAS=remote-docker
 export REMOTE_RUNNER_ROOT=/srv/remote-worktree-runner
 export REMOTE_RUNNER_ALLOWED_REPOSITORIES=remote-worktree-runner,example-api
+export REMOTE_RUNNER_MAX_HEAVY_JOBS=3
 ```
 
 Legacy `TRIE_REMOTE_*` variables remain supported. Public `REMOTE_RUNNER_*` names take precedence.
@@ -186,9 +187,16 @@ trie-run run --job integration-01 --weight heavy \
   bash -lc 'test -d "$TRIE_WORKER_ROOT" && ./scripts/integration.sh'
 ```
 
+Use `--weight exclusive` for workloads that create shared Kind clusters, bind
+fixed non-job-scoped ports, or otherwise require the server to themselves.
+Ordinary Docker builds and isolated Compose tests should use `heavy`.
+
 ## Safety model
 
-- Only one heavy job is admitted at a time.
+- Heavy jobs enter a FIFO permit pool. `REMOTE_RUNNER_MAX_HEAVY_JOBS` defaults
+  to one and may be increased for servers with sufficient capacity.
+- An exclusive job acquires the entire pool and cannot be bypassed by newer
+  heavy jobs.
 - Heavy jobs require 100 GiB free by default. Workers warn below 80 GiB and cancel below 60 GiB.
 - Repository names and server paths are validated before use.
 - Commands are transported as JSON argument arrays, not reconstructed shell strings.

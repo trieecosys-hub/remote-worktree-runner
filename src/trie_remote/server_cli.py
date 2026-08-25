@@ -21,38 +21,30 @@ from trie_remote.job_store import FINAL_STATES, JobSpec, JobStore, utc_now
 from trie_remote.job_worker import run_job
 from trie_remote.port_policy import validate_compose_command
 from trie_remote.preview_registry import PreviewRegistry
-from trie_remote.scheduler import DiskGuard
+from trie_remote.scheduler import DiskGuard, ResourcePool, unit_is_inactive as _unit_is_inactive
 from trie_remote.server_paths import ServerPaths
 from trie_remote.server_workspace import ensure_bare_repository, prepare_workspace
 
 
-def _unit_is_inactive(unit: str) -> bool:
-    """Return whether systemd confirms that a worker unit cannot be running."""
-    try:
-        result = subprocess.run(
-            [
-                "systemctl",
-                "--user",
-                "show",
-                unit,
-                "--property=LoadState",
-                "--property=ActiveState",
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    properties = {}
-    for line in result.stdout.splitlines():
-        key, separator, value = line.partition("=")
-        if separator:
-            properties[key] = value
-    return properties.get("LoadState") == "not-found" or properties.get(
-        "ActiveState",
-    ) in {"inactive", "failed"}
+def _resource_pool(
+    config: RunnerConfig,
+    paths: ServerPaths,
+    store: JobStore,
+) -> ResourcePool:
+    """Build the configured scheduler with systemd stale-worker detection."""
+    return ResourcePool(
+        paths.locks / "heavy-pool",
+        config.max_heavy_jobs,
+        store,
+        lambda job_id: _unit_is_inactive(
+            str(
+                store.status(job_id).get(
+                    "unit",
+                    f"trie-job-{job_id}",
+                ),
+            ),
+        ),
+    )
 
 
 def _reconcile_inactive_unit(
@@ -280,6 +272,7 @@ def main(argv: list[str] | None = None) -> int:
                 "--value",
             ],
         ) == "yes"
+        scheduler = _resource_pool(config, paths, store).snapshot()
         report = {
             "reachable": True,
             "architecture": platform.machine(),
@@ -296,6 +289,10 @@ def main(argv: list[str] | None = None) -> int:
             "jq": version([str(paths.bin / "jq"), "--version"]),
             "systemd_user": version(["systemctl", "--user", "is-system-running"]),
             "systemd_linger": systemd_linger,
+            "scheduler_capacity": scheduler["capacity"],
+            "scheduler_held_permits": scheduler["held_permits"],
+            "scheduler_queued_jobs": scheduler["queued_jobs"],
+            "scheduler_exclusive_waiting": scheduler["exclusive_waiting"],
             "free_bytes": shutil.disk_usage(paths.root).free,
             "remote_root": str(paths.root),
         }
@@ -367,7 +364,19 @@ def main(argv: list[str] | None = None) -> int:
         if not store.exists(arguments.job):
             print(json.dumps(_missing_job(arguments.job), sort_keys=True))
             return 3
-        print(json.dumps(store.status(arguments.job), sort_keys=True))
+        status = store.status(arguments.job)
+        if status["state"] == "queued":
+            scheduler = _resource_pool(config, paths, store).snapshot(arguments.job)
+            for key in (
+                "queue_position",
+                "queue_wait_seconds",
+                "requested_permits",
+                "available_permits",
+                "blocked_by",
+            ):
+                if key in scheduler:
+                    status[key] = scheduler[key]
+        print(json.dumps(status, sort_keys=True))
         return 0
 
     if arguments.command == "logs":

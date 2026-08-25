@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import tempfile
 import time
 from typing import TYPE_CHECKING, BinaryIO, Any
@@ -18,6 +19,35 @@ from trie_remote.job_store import FINAL_STATES
 
 if TYPE_CHECKING:
     from trie_remote.job_store import JobStore
+
+
+def unit_is_inactive(unit: str) -> bool:
+    """Return whether systemd confirms that a worker unit cannot be running."""
+    try:
+        result = subprocess.run(
+            [
+                "systemctl",
+                "--user",
+                "show",
+                unit,
+                "--property=LoadState",
+                "--property=ActiveState",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    properties = {}
+    for line in result.stdout.splitlines():
+        key, separator, value = line.partition("=")
+        if separator:
+            properties[key] = value
+    return properties.get("LoadState") == "not-found" or properties.get(
+        "ActiveState",
+    ) in {"inactive", "failed"}
 
 
 class DiskGuard:

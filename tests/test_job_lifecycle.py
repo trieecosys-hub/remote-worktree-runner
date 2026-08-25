@@ -10,13 +10,15 @@ import json
 import os
 import subprocess
 import tempfile
+import threading
+import time
 import unittest
 from unittest.mock import patch
 
 from trie_remote.job_store import JobSpec, JobStore
 from trie_remote.job_worker import run_job
 from trie_remote.preview import PreviewRoute
-from trie_remote.scheduler import DiskGuard
+from trie_remote.scheduler import DiskGuard, ResourcePool, SchedulerCancelled
 from trie_remote.server_cli import main as server_main
 from trie_remote.server_paths import ServerPaths
 
@@ -86,7 +88,73 @@ class JobLifecycleTests(unittest.TestCase):
                 result = server_main(["doctor"])
 
             self.assertEqual(result, 0)
-            self.assertTrue(json.loads(output.getvalue()).get("systemd_linger"))
+            report = json.loads(output.getvalue())
+            self.assertTrue(report.get("systemd_linger"))
+            self.assertEqual(report["scheduler_capacity"], 1)
+            self.assertEqual(report["scheduler_held_permits"], 0)
+            self.assertEqual(report["scheduler_queued_jobs"], 0)
+            self.assertFalse(report["scheduler_exclusive_waiting"])
+
+    def test_status_enriches_a_queued_heavy_job(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "root"
+            paths = ServerPaths.from_root(root)
+            paths.create()
+            workspace = root / "workspaces" / "trie-space" / "queued" / "primary"
+            spec = JobSpec(
+                job_id="queued",
+                repository="trie-space",
+                workspace=str(workspace),
+                workspaces={"primary": str(workspace)},
+                includes={},
+                weight="heavy",
+                argv=("true",),
+                created_at="2026-08-25T00:00:00+00:00",
+            )
+            store = JobStore(paths)
+            store.create(spec)
+            store.transition("queued", "queued", unit="trie-job-queued")
+            pool = ResourcePool(paths.locks / "heavy-pool", 1)
+            holder = pool.wait("holder", "heavy", lambda: False)
+            cancelled = threading.Event()
+            waiter_errors: list[type[BaseException]] = []
+
+            def wait() -> None:
+                try:
+                    pool.wait("queued", "heavy", cancelled.is_set)
+                except BaseException as error:
+                    waiter_errors.append(type(error))
+
+            thread = threading.Thread(target=wait)
+            thread.start()
+            deadline = time.monotonic() + 3
+            while pool.snapshot("queued").get("queue_position") != 1:
+                self.assertLess(time.monotonic(), deadline)
+                time.sleep(0.01)
+
+            output = StringIO()
+            environment = {
+                "REMOTE_RUNNER_ROOT": str(root),
+                "REMOTE_RUNNER_ALLOWED_REPOSITORIES": "trie-space",
+            }
+            with (
+                patch.dict(os.environ, environment, clear=True),
+                patch("trie_remote.server_cli._unit_is_inactive", return_value=False),
+                redirect_stdout(output),
+            ):
+                result = server_main(["status", "queued"])
+
+            status = json.loads(output.getvalue())
+            self.assertEqual(result, 0)
+            self.assertEqual(status["queue_position"], 1)
+            self.assertEqual(status["requested_permits"], 1)
+            self.assertEqual(status["available_permits"], 0)
+            self.assertEqual(status["blocked_by"], ["holder"])
+
+            cancelled.set()
+            thread.join(timeout=3)
+            holder.release()
+            self.assertEqual(waiter_errors, [SchedulerCancelled])
 
     def test_missing_status_and_cancel_return_structured_retryable_results(
         self,
@@ -317,6 +385,48 @@ class JobLifecycleTests(unittest.TestCase):
             self.assertEqual(status["state"], "failed")
             self.assertEqual(status["exit_code"], 7)
             self.assertIn("marker", store.log_path("fixture").read_text())
+
+    def test_worker_cancels_while_queued_before_creating_builder(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = ServerPaths.from_root(Path(temporary) / "root")
+            paths.create()
+            workspace = Path(temporary) / "workspace"
+            workspace.mkdir()
+            spec = JobSpec(
+                job_id="queued-cancel",
+                repository="trie-space",
+                workspace=str(workspace),
+                workspaces={"primary": str(workspace)},
+                includes={},
+                weight="heavy",
+                argv=("true",),
+                created_at="2026-08-25T00:00:00+00:00",
+            )
+            store = JobStore(paths)
+            store.create(spec)
+            store.transition("queued-cancel", "queued")
+            store.request_cancel("queued-cancel")
+
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "REMOTE_RUNNER_ROOT": str(paths.root),
+                        "REMOTE_RUNNER_MAX_HEAVY_JOBS": "2",
+                    },
+                    clear=True,
+                ),
+                patch("trie_remote.job_worker.ensure_job_builder") as builder,
+            ):
+                exit_code = run_job(
+                    paths,
+                    "queued-cancel",
+                    disk_guard=DiskGuard(0, 0, 0, lambda _path: 1024**4),
+                )
+
+            self.assertEqual(exit_code, 130)
+            self.assertEqual(store.status("queued-cancel")["state"], "cancelled")
+            builder.assert_not_called()
 
     def test_worker_records_spawn_failure_without_logging_arguments(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

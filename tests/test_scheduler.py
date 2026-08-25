@@ -30,8 +30,9 @@ class SchedulerTests(unittest.TestCase):
 
     def test_heavy_admission_requires_minimum_free_space(self) -> None:
         guard = DiskGuard(100, 80, 60, lambda _path: 99 * 1024**3)
-        with self.assertRaises(RuntimeError):
-            guard.admit(Path("/tmp"), "heavy")
+        for weight in ("heavy", "exclusive"):
+            with self.subTest(weight=weight), self.assertRaises(RuntimeError):
+                guard.admit(Path("/tmp"), weight)
         guard.admit(Path("/tmp"), "light")
 
     def test_monitor_levels_warn_then_cancel(self) -> None:
