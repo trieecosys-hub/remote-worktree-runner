@@ -8,7 +8,6 @@ from pathlib import Path
 
 from trie_remote.common import validate_identifier
 
-
 DEFAULT_REPOSITORIES = frozenset(
     {
         "trie-vms",
@@ -33,8 +32,9 @@ class RunnerConfig:
     allowed_repositories: frozenset[str]
 
     @classmethod
-    def load(cls, environ: Mapping[str, str]) -> "RunnerConfig":
+    def load(cls, environ: Mapping[str, str]) -> RunnerConfig:
         """Load configuration from environment values and safe defaults."""
+
         def value(public_name: str, legacy_name: str, default: str) -> str:
             return environ.get(public_name, environ.get(legacy_name, default))
 

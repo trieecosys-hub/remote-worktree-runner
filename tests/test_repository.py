@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from pathlib import Path
 
 from trie_remote.repository import RepositoryState
 

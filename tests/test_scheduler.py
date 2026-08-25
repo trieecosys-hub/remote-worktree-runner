@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import os
 import subprocess
 import sys
@@ -10,6 +9,7 @@ import tempfile
 import threading
 import time
 import unittest
+from pathlib import Path
 
 from trie_remote.scheduler import (
     DiskGuard,
@@ -124,7 +124,7 @@ class SchedulerTests(unittest.TestCase):
             def wait() -> None:
                 try:
                     pool.wait("cancelled", "heavy", cancelled.is_set)
-                except BaseException as error:
+                except BaseException as error:  # noqa: BLE001
                     errors.append(type(error))
 
             thread = threading.Thread(target=wait)
@@ -149,7 +149,10 @@ lease = ResourcePool(Path(sys.argv[1]), 1).wait("child", "heavy", lambda: False)
 print("acquired", flush=True)
 sys.stdin.read()
 """
-            environment = {**os.environ, "PYTHONPATH": str(Path(__file__).parents[1] / "src")}
+            environment = {
+                **os.environ,
+                "PYTHONPATH": str(Path(__file__).parents[1] / "src"),
+            }
             process = subprocess.Popen(
                 [sys.executable, "-c", script, temporary],
                 env=environment,

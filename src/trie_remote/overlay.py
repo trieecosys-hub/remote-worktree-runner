@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 import fnmatch
-from pathlib import Path, PurePosixPath
 import subprocess
+from pathlib import Path, PurePosixPath
 
 from trie_remote.job_store import OverlayManifest
 
 
 def validate_overlay_path(value: str) -> str:
     """Return one safe repository-relative POSIX path."""
-    if not value or value.startswith("/") or any(
-        character in value for character in ("\0", "\n", "\r")
+    if (
+        not value
+        or value.startswith("/")
+        or any(character in value for character in ("\0", "\n", "\r"))
     ):
         raise ValueError(f"invalid overlay path: {value!r}")
     components = value.split("/")

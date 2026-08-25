@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 
 from trie_remote.job_store import JobSpec, JobStore, OverlayManifest
 from trie_remote.server_paths import ServerPaths
@@ -52,6 +52,7 @@ class JobStoreTests(unittest.TestCase):
                 argv=("true",),
                 created_at="2026-08-25T00:00:00+00:00",
             )
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
@@ -62,7 +63,9 @@ class JobStoreTests(unittest.TestCase):
             job_id="alpha",
             repository="trie-space",
             workspace="/srv/trie-platform/workspaces/trie-space/alpha/primary",
-            workspaces={"primary": "/srv/trie-platform/workspaces/trie-space/alpha/primary"},
+            workspaces={
+                "primary": "/srv/trie-platform/workspaces/trie-space/alpha/primary"
+            },
             includes={},
             weight="heavy",
             argv=("bash", "-lc", "printf ok"),

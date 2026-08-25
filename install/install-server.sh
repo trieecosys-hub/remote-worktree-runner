@@ -7,14 +7,16 @@ source "$root/config/versions.env"
 host=trie-docker
 remote_root=/srv/trie-platform
 repositories=trie-vms,trie-center,trie-process,trie-space,trie-platform-ops
+max_heavy_jobs=1
 dry_run=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --host) host=${2:?missing host}; shift 2 ;;
     --remote-root) remote_root=${2:?missing remote root}; shift 2 ;;
     --repositories) repositories=${2:?missing repositories}; shift 2 ;;
+    --max-heavy-jobs) max_heavy_jobs=${2:?missing max heavy jobs}; shift 2 ;;
     --dry-run) dry_run=true; shift ;;
-    *) echo "usage: $0 [--host HOST] [--remote-root PATH] [--repositories CSV] [--dry-run]" >&2; exit 2 ;;
+    *) echo "usage: $0 [--host HOST] [--remote-root PATH] [--repositories CSV] [--max-heavy-jobs COUNT] [--dry-run]" >&2; exit 2 ;;
   esac
 done
 
@@ -27,9 +29,14 @@ if [[ ! "$repositories" =~ ^[a-z0-9][a-z0-9-]{0,62}(,[a-z0-9][a-z0-9-]{0,62})*$ 
   echo "invalid repositories: use comma-separated lowercase identifiers" >&2
   exit 2
 fi
+if [[ ! "$max_heavy_jobs" =~ ^[1-9][0-9]*$ ]]; then
+  echo "invalid max heavy jobs: use a positive integer" >&2
+  exit 2
+fi
 if $dry_run; then
   echo "would verify and install runner on $host:$remote_root/bin"
   echo "would allow repositories: $repositories"
+  echo "would configure $max_heavy_jobs concurrent heavy jobs"
   echo "would enable and verify systemd lingering for the remote runner account"
   echo "would download checksum-verified kubectl $KUBECTL_VERSION for linux/amd64"
   echo "would download checksum-verified Kind $KIND_VERSION for linux/amd64"
@@ -119,6 +126,7 @@ wrapper_tmp="$stage/trie-runner"
 printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail' \
   "export REMOTE_RUNNER_ROOT=\"$remote_root\"" \
   "export REMOTE_RUNNER_ALLOWED_REPOSITORIES=\"$repositories\"" \
+  "export REMOTE_RUNNER_MAX_HEAVY_JOBS=\"$max_heavy_jobs\"" \
   "exec /usr/bin/python3 \"$remote_root/bin/trie-remote.pyz\" server \"\$@\"" \
   >"$wrapper_tmp"
 chmod 0755 "$wrapper_tmp"

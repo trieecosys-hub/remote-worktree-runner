@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager
 import fcntl
 import json
 import os
-from pathlib import Path
 import shutil
 import subprocess
 import tempfile
 import time
-from typing import TYPE_CHECKING, BinaryIO, Any
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, BinaryIO
 
 from trie_remote.common import validate_identifier
 from trie_remote.job_store import FINAL_STATES
@@ -122,7 +122,7 @@ class HeavyJobLease:
         self._stream.close()
         self._stream = None
 
-    def __enter__(self) -> "HeavyJobLease":
+    def __enter__(self) -> HeavyJobLease:  # noqa: PYI034
         self.acquire()
         return self
 
@@ -147,7 +147,7 @@ class ResourceLease:
             fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
             stream.close()
 
-    def __enter__(self) -> "ResourceLease":
+    def __enter__(self) -> ResourceLease:  # noqa: PYI034
         return self
 
     def __exit__(self, *_args: object) -> None:
@@ -161,7 +161,7 @@ class ResourcePool:
         self,
         root: Path,
         capacity: int,
-        store: "JobStore | None" = None,
+        store: JobStore | None = None,
         worker_inactive: Callable[[str], bool] | None = None,
     ) -> None:
         if capacity < 1:
@@ -338,8 +338,7 @@ class ResourcePool:
             "available_permits": available,
             "queued_jobs": len(tickets),
             "exclusive_waiting": any(
-                int(ticket["requested_permits"]) == self.capacity
-                for ticket in tickets
+                int(ticket["requested_permits"]) == self.capacity for ticket in tickets
             ),
         }
         if job_id is None:

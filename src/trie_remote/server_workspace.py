@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import re
 import subprocess
+from pathlib import Path
 
 from trie_remote.common import ensure_below, validate_identifier
 from trie_remote.job_store import JobSpec, OverlayManifest
 from trie_remote.overlay import apply_overlay_deletions
 from trie_remote.server_paths import ServerPaths
-
 
 COMMIT_PATTERN = re.compile(r"[0-9a-f]{40,64}")
 

@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import subprocess
 from collections.abc import Collection
 from dataclasses import dataclass
 from pathlib import Path
-import subprocess
 
 from trie_remote.config import DEFAULT_REPOSITORIES
 from trie_remote.job_store import OverlayManifest
@@ -39,7 +39,7 @@ class RepositoryState:
         cls,
         cwd: Path,
         allowed_repositories: Collection[str] = DEFAULT_REPOSITORIES,
-    ) -> "RepositoryState":
+    ) -> RepositoryState:
         """Discover a worktree while retaining the product repository name."""
         starting_directory = cwd if cwd.is_dir() else cwd.parent
         root = Path(_git(starting_directory, "rev-parse", "--show-toplevel")).resolve()

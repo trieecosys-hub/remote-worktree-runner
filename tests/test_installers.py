@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 import subprocess
 import tempfile
 import time
 import unittest
-
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -124,7 +123,42 @@ exit 1
             result.stdout,
         )
 
-    def test_server_installer_accepts_safe_remote_root_and_rejects_shell_input(self) -> None:
+    def test_server_installer_configures_a_positive_heavy_job_limit(self) -> None:
+        script = ROOT / "install" / "install-server.sh"
+        accepted = subprocess.run(
+            [script, "--max-heavy-jobs", "3", "--dry-run"],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        zero = subprocess.run(
+            [script, "--max-heavy-jobs", "0", "--dry-run"],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        invalid = subprocess.run(
+            [script, "--max-heavy-jobs", "three", "--dry-run"],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertIn("would configure 3 concurrent heavy jobs", accepted.stdout)
+        self.assertEqual(zero.returncode, 2)
+        self.assertEqual(invalid.returncode, 2)
+        self.assertIn("invalid max heavy jobs", zero.stderr)
+        self.assertIn("invalid max heavy jobs", invalid.stderr)
+        installer = script.read_text(encoding="utf-8")
+        self.assertIn("REMOTE_RUNNER_MAX_HEAVY_JOBS", installer)
+        self.assertIn("$max_heavy_jobs", installer)
+
+    def test_server_installer_accepts_safe_remote_root_and_rejects_shell_input(
+        self,
+    ) -> None:
         script = ROOT / "install" / "install-server.sh"
         safe = subprocess.run(
             [
@@ -161,13 +195,17 @@ exit 1
         self.assertIn("REMOTE_RUNNER_ROOT", content)
         self.assertIn("REMOTE_RUNNER_ALLOWED_REPOSITORIES", content)
 
-    def test_deployment_verifier_uses_one_scoped_fixture_job(self) -> None:
+    def test_deployment_verifier_uses_scoped_scheduler_fixture_jobs(self) -> None:
         content = (ROOT / "scripts" / "verify-deployment.sh").read_text(
             encoding="utf-8",
         )
 
         self.assertIn("set -euo pipefail", content)
-        self.assertIn('cleanup "$job" --volumes', content)
+        self.assertIn("--weight heavy", content)
+        self.assertIn("--weight exclusive", content)
+        self.assertIn('cleanup "$fixture_job" --volumes', content)
+        self.assertIn("heavy jobs did not overlap", content)
+        self.assertIn("exclusive job bypassed heavy jobs", content)
         self.assertNotIn("docker system prune", content)
         self.assertNotIn("docker volume prune", content)
 

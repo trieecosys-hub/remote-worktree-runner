@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from pathlib import Path
 
 from trie_remote.job_store import JobSpec, OverlayManifest
 from trie_remote.server_paths import ServerPaths

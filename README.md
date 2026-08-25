@@ -57,7 +57,8 @@ install/install-local.sh
 install/install-server.sh \
   --host remote-docker \
   --remote-root /srv/remote-worktree-runner \
-  --repositories remote-worktree-runner,example-api
+  --repositories remote-worktree-runner,example-api \
+  --max-heavy-jobs 3
 ```
 
 Server jobs use transient `systemd --user` units. The installer enables and
@@ -194,7 +195,8 @@ Ordinary Docker builds and isolated Compose tests should use `heavy`.
 ## Safety model
 
 - Heavy jobs enter a FIFO permit pool. `REMOTE_RUNNER_MAX_HEAVY_JOBS` defaults
-  to one and may be increased for servers with sufficient capacity.
+  to one and may be increased through the server installer's
+  `--max-heavy-jobs` option when the host has sufficient capacity.
 - An exclusive job acquires the entire pool and cannot be bypassed by newer
   heavy jobs.
 - Heavy jobs require 100 GiB free by default. Workers warn below 80 GiB and cancel below 60 GiB.

@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from pathlib import Path
 
 from trie_remote.overlay import apply_overlay_deletions, validate_overlay_path
 from trie_remote.repository import RepositoryState

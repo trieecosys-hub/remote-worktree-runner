@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import os
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 
 from trie_remote.common import ensure_below, validate_identifier
 from trie_remote.config import RunnerConfig
@@ -86,9 +85,12 @@ class RunnerConfigTests(unittest.TestCase):
 
         self.assertEqual(config.max_heavy_jobs, 3)
         for value in ("0", "-1"):
-            with self.subTest(value=value), self.assertRaisesRegex(
-                ValueError,
-                "max heavy jobs must be positive",
+            with (
+                self.subTest(value=value),
+                self.assertRaisesRegex(
+                    ValueError,
+                    "max heavy jobs must be positive",
+                ),
             ):
                 RunnerConfig.load({"REMOTE_RUNNER_MAX_HEAVY_JOBS": value})
 
