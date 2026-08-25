@@ -171,7 +171,9 @@ exit 1
             text=True,
         )
 
-        self.assertIn("would install only the runner artifact and wrapper", result.stdout)
+        self.assertIn(
+            "would install only the runner artifact and wrapper", result.stdout
+        )
         self.assertIn("would configure 3 concurrent heavy jobs", result.stdout)
         self.assertNotIn("would download", result.stdout)
 
