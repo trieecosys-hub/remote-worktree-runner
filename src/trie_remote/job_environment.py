@@ -63,6 +63,7 @@ def create_job_environment(paths: ServerPaths, job: object) -> dict[str, str]:
         "DOCKER_CONFIG": str(docker_config),
         "XDG_CACHE_HOME": str(cache_home),
         "PLAYWRIGHT_BROWSERS_PATH": str(playwright_browsers),
+        "PLAYWRIGHT_SKIP_BROWSER_GC": "1",
         "TRIE_M4_CENTER_NODE_DIR": str(center_node_bin),
         "PATH": (
             f"{shim_directory}:{paths.bin}:{process_node_bin}:{go_bin}:"

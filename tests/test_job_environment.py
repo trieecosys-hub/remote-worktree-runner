@@ -55,6 +55,10 @@ class JobEnvironmentTests(unittest.TestCase):
                 str(paths.caches / "playwright"),
             )
             self.assertEqual(
+                environment.get("PLAYWRIGHT_SKIP_BROWSER_GC"),
+                "1",
+            )
+            self.assertEqual(
                 environment["TRIE_M4_CENTER_NODE_DIR"],
                 str(paths.toolchains / "center-node" / "bin"),
             )

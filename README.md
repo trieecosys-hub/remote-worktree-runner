@@ -218,6 +218,10 @@ Ordinary Docker builds and isolated Compose tests should use `heavy`.
 - Daemon-wide Docker prune and restart operations are rejected.
 - Cleanup targets the exact job and preserves named volumes unless `--volumes` is explicit.
 - Cleanup refuses a job that still owns an active preview route.
+- Playwright browser revisions share a download cache, but jobs disable
+  Playwright's automatic stale-browser garbage collection so concurrent jobs
+  cannot remove each other's executable. Prune this cache only during a
+  maintenance window with no active or queued jobs.
 - The optional gateway is loopback-only, has no dashboard, and does not access
   the Docker socket.
 - The remote Unix account and Docker daemon remain trusted components.
