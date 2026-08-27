@@ -60,6 +60,48 @@ class ServerWorkspaceTests(unittest.TestCase):
         self.assertTrue((workspace / ".git").is_file())
         self.assertTrue(workspace.is_relative_to(self.paths.workspaces))
 
+    def test_bare_mirror_accepts_a_commit_from_a_shallow_worktree(self) -> None:
+        """A shallow local checkout can transfer its selected job commit."""
+        shallow = self.base / "shallow"
+        subprocess.run(
+            ["git", "clone", "--depth", "1", f"file://{self.source}", str(shallow)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        mirror = ensure_bare_repository(self.paths, "trie-sandbox")
+        commit = git(shallow, "rev-parse", "HEAD")
+
+        result = subprocess.run(
+            [
+                "git",
+                "push",
+                "--force",
+                str(mirror),
+                f"{commit}:refs/trie-jobs/shallow/primary",
+            ],
+            cwd=shallow,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            git(mirror, "rev-parse", "refs/trie-jobs/shallow/primary"),
+            commit,
+        )
+        workspace = prepare_workspace(
+            self.paths,
+            "shallow",
+            "trie-sandbox",
+            commit,
+            "primary",
+        )
+        self.assertEqual(
+            (workspace / "tracked.txt").read_text(encoding="utf-8"), "initial\n"
+        )
+
     def test_repeat_preparation_resets_dirty_overlay(self) -> None:
         workspace = prepare_workspace(
             self.paths,

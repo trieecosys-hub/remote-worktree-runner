@@ -31,6 +31,14 @@ def ensure_bare_repository(paths: ServerPaths, repository: str) -> Path:
         _run("git", "init", "--bare", str(mirror))
     elif not (mirror / "HEAD").is_file():
         raise ValueError(f"repository mirror is not bare: {mirror}")
+    _run(
+        "git",
+        "--git-dir",
+        str(mirror),
+        "config",
+        "receive.shallowUpdate",
+        "true",
+    )
     return mirror
 
 
