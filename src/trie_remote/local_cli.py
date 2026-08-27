@@ -8,11 +8,12 @@ import os
 import shutil
 import subprocess
 import sys
+from collections.abc import Collection
 from datetime import datetime, timezone
 from pathlib import Path
 
 from trie_remote.common import validate_identifier
-from trie_remote.config import RunnerConfig
+from trie_remote.config import DEFAULT_REPOSITORIES, RunnerConfig
 from trie_remote.job_store import FINAL_STATES, JobSpec
 from trie_remote.repository import RepositoryState
 from trie_remote.transport import ExecutionStreamDetached, Transport
@@ -131,13 +132,22 @@ def run_worktrees(
     weight: str,
     argv: list[str],
     transport: Transport,
+    allowed_repositories: Collection[str] = DEFAULT_REPOSITORIES,
 ) -> int:
     """Synchronize exact worktrees, submit a job, and follow its log."""
     validate_identifier(job_id, "job")
     validate_requested_command(argv)
-    states = {"primary": RepositoryState.discover(primary)}
+    states = {
+        "primary": RepositoryState.discover(
+            primary,
+            allowed_repositories,
+        ),
+    }
     states.update(
-        {role: RepositoryState.discover(path) for role, path in includes.items()}
+        {
+            role: RepositoryState.discover(path, allowed_repositories)
+            for role, path in includes.items()
+        },
     )
     remote_workspaces = {
         role: str(transport.remote_root / "workspaces" / state.name / job_id / role)
@@ -321,6 +331,7 @@ def main(argv: list[str] | None = None) -> int:
                 arguments.weight,
                 command,
                 transport,
+                config.allowed_repositories,
             )
         if arguments.command == "doctor":
             return _doctor(config, transport, arguments.show_sync)

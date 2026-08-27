@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
@@ -111,6 +112,49 @@ class WorkflowTransport:
         return subprocess.CompletedProcess(arguments, 0, stdout="")
 
 
+class DiscoveryWorkflowTransport:
+    """Execute a discovered multi-worktree job without remote side effects."""
+
+    remote_root = Path("/srv/trie-platform")
+
+    def __init__(self, exclude_file: Path) -> None:
+        self.exclude_file = exclude_file
+        self.spec: object | None = None
+
+    def reserve(self, spec: object) -> Reservation:
+        self.spec = spec
+        return Reservation(
+            protocol_version=2,
+            mirrors={},
+            workspaces=spec.workspaces,
+        )
+
+    def push_commit(
+        self,
+        _state: RepositoryState,
+        _job_id: str,
+        _role: str,
+        *,
+        ensure_repository: bool = True,
+    ) -> None:
+        del ensure_repository
+
+    def prepare_all(self, _job_id: str) -> dict[str, str]:
+        assert self.spec is not None
+        return dict(self.spec.workspaces)
+
+    def sync_overlay(
+        self,
+        _state: RepositoryState,
+        _remote_workspace: str,
+        _manifest: OverlayManifest,
+    ) -> None:
+        return None
+
+    def execute(self, _job_id: str) -> ExecutionResult:
+        return ExecutionResult(0, {"state": "passed", "exit_code": 0})
+
+
 class LocalCliTests(unittest.TestCase):
     def setUp(self) -> None:
         self.state = RepositoryState(
@@ -148,6 +192,81 @@ class LocalCliTests(unittest.TestCase):
             .weight,
             "exclusive",
         )
+
+    def test_run_discovers_primary_and_include_from_configured_allowlist(self) -> None:
+        """Configured repositories must be accepted before source transfer starts."""
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            primary = self._create_repository(base / "trie-sandbox")
+            included = self._create_repository(base / "trie-fixture-include")
+            excludes = base / "sync-excludes.txt"
+            excludes.write_text("- .git\n", encoding="utf-8")
+            transport = DiscoveryWorkflowTransport(excludes)
+
+            with (
+                patch.dict(
+                    "trie_remote.local_cli.os.environ",
+                    {
+                        "REMOTE_RUNNER_ALLOWED_REPOSITORIES": (
+                            "trie-sandbox,trie-fixture-include"
+                        ),
+                    },
+                    clear=False,
+                ),
+                patch("trie_remote.local_cli.Path.cwd", return_value=primary),
+                patch("trie_remote.local_cli._transport", return_value=transport),
+                redirect_stdout(StringIO()),
+            ):
+                result = main(
+                    [
+                        "run",
+                        "--job",
+                        "sandbox-allowlist",
+                        "--include",
+                        f"fixture={included}",
+                        "--",
+                        "true",
+                    ],
+                )
+
+        self.assertEqual(result, 0)
+        self.assertIsNotNone(transport.spec)
+        assert transport.spec is not None
+        self.assertEqual(transport.spec.repository, "trie-sandbox")
+        self.assertEqual(transport.spec.includes, {"fixture": "trie-fixture-include"})
+
+    @staticmethod
+    def _create_repository(path: Path) -> Path:
+        """Create a clean Git repository with a stable fixture commit."""
+        path.mkdir()
+        for arguments in (
+            ("init", "-b", "main"),
+            ("config", "user.email", "fixture@example.com"),
+            ("config", "user.name", "Fixture"),
+        ):
+            subprocess.run(
+                ["git", *arguments],
+                cwd=path,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        (path / "README.md").write_text("fixture\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "add", "README.md"],
+            cwd=path,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "initial"],
+            cwd=path,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return path
 
     def test_has_reconnect_and_doctor_commands(self) -> None:
         parser = build_parser()
