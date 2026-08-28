@@ -201,7 +201,12 @@ class ResourcePool:
             None,
         )
 
-    def _write_ticket(self, job_id: str, requested_permits: int) -> Path:
+    def _write_ticket(
+        self,
+        job_id: str,
+        requested_permits: int,
+        session: str | None,
+    ) -> Path:
         existing = self._find_ticket(job_id)
         if existing is not None:
             return existing
@@ -215,6 +220,7 @@ class ResourcePool:
                         "job_id": job_id,
                         "requested_permits": requested_permits,
                         "created_at": created_at,
+                        "session": session,
                     },
                     stream,
                     sort_keys=True,
@@ -274,14 +280,38 @@ class ResourcePool:
         if ticket is not None:
             ticket.unlink(missing_ok=True)
 
+    def _supersede_queued_session(self, job_id: str, session: str | None) -> None:
+        """Cancel older queued work from one explicitly identified session."""
+        if session is None or self.store is None:
+            return
+        for path in self._ticket_paths():
+            try:
+                ticket = self._read_ticket(path)
+            except (OSError, json.JSONDecodeError, TypeError, ValueError):
+                path.unlink(missing_ok=True)
+                continue
+            older_job = str(ticket.get("job_id", ""))
+            if older_job == job_id or ticket.get("session") != session:
+                continue
+            if self._ticket_is_stale(older_job):
+                path.unlink(missing_ok=True)
+                continue
+            self.store.request_cancel(older_job)
+            path.unlink(missing_ok=True)
+
     def wait(
         self,
         job_id: str,
         weight: str,
         cancelled: Callable[[], bool],
+        *,
+        session: str | None = None,
     ) -> ResourceLease:
         """Wait in FIFO order and return the permits required by a job."""
         safe_job = validate_identifier(job_id, "job")
+        safe_session = (
+            validate_identifier(session, "session") if session is not None else None
+        )
         if weight == "light":
             return ResourceLease([])
         if weight not in {"heavy", "exclusive"}:
@@ -289,7 +319,8 @@ class ResourcePool:
         requested = self.capacity if weight == "exclusive" else 1
         with self._locked_queue():
             self._prune_stale_tickets()
-            self._write_ticket(safe_job, requested)
+            self._supersede_queued_session(safe_job, safe_session)
+            self._write_ticket(safe_job, requested, safe_session)
         while True:
             if cancelled():
                 with self._locked_queue():

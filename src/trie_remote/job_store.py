@@ -57,12 +57,25 @@ class JobSpec:
     created_at: str
     commits: Mapping[str, str] = field(default_factory=dict)
     overlays: Mapping[str, OverlayManifest] = field(default_factory=dict)
+    workload: str = "generic"
+    session: str | None = None
 
     def __post_init__(self) -> None:
         validate_identifier(self.job_id, "job")
         validate_identifier(self.repository, "repository")
         if self.weight not in {"light", "heavy", "exclusive"}:
             raise ValueError("weight must be light, heavy, or exclusive")
+        if self.workload not in {
+            "generic",
+            "compose",
+            "browser",
+            "e2e",
+            "kind",
+            "certification",
+        }:
+            raise ValueError("unsupported workload classification")
+        if self.session is not None:
+            validate_identifier(self.session, "session")
         if not self.argv or not all(
             isinstance(value, str) and value for value in self.argv
         ):
@@ -109,6 +122,8 @@ class JobSpec:
                 str(role): OverlayManifest.from_dict(dict(manifest))
                 for role, manifest in dict(value.get("overlays", {})).items()
             },
+            workload=str(value.get("workload", "generic")),
+            session=str(value["session"]) if value.get("session") else None,
         )
 
 

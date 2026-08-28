@@ -6,7 +6,9 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+from trie_remote import server_workspace
 from trie_remote.job_store import JobSpec, OverlayManifest
 from trie_remote.server_paths import ServerPaths
 from trie_remote.server_workspace import (
@@ -100,6 +102,39 @@ class ServerWorkspaceTests(unittest.TestCase):
         )
         self.assertEqual(
             (workspace / "tracked.txt").read_text(encoding="utf-8"), "initial\n"
+        )
+
+    def test_enabled_mirror_does_not_rewrite_its_git_config(self) -> None:
+        """Concurrent reservations only read the already-enabled mirror config."""
+        with patch(
+            "trie_remote.server_workspace._run",
+            wraps=server_workspace._run,
+        ) as command:
+            ensure_bare_repository(self.paths, "trie-vms")
+
+        calls = [tuple(call.args) for call in command.call_args_list]
+        self.assertIn(
+            (
+                "git",
+                "--git-dir",
+                str(self.mirror),
+                "config",
+                "--type=bool",
+                "--get",
+                "receive.shallowUpdate",
+            ),
+            calls,
+        )
+        self.assertNotIn(
+            (
+                "git",
+                "--git-dir",
+                str(self.mirror),
+                "config",
+                "receive.shallowUpdate",
+                "true",
+            ),
+            calls,
         )
 
     def test_repeat_preparation_resets_dirty_overlay(self) -> None:

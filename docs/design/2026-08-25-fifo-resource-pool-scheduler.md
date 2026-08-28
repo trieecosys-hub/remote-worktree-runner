@@ -63,8 +63,11 @@ heavy-pool/
 ```
 
 Each heavy or exclusive worker creates one private queue ticket. Ticket
-creation and removal are serialized by `queue.lock`. Tickets record only the
-job identifier, requested permit count, and creation timestamp.
+creation and removal are serialized by `queue.lock`. Tickets record the job
+identifier, requested permit count, creation timestamp, and optional session
+identifier. When a session submits newer queued work, the scheduler requests
+cancellation for its older queued ticket and removes that ticket. Running jobs
+are never superseded.
 
 Actual permits are advisory kernel locks on the slot files. A worker retains
 the open file descriptors for the duration of the workload. The kernel

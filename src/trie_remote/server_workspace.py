@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import time
 from pathlib import Path
 
 from trie_remote.common import ensure_below, validate_identifier
@@ -23,6 +24,45 @@ def _run(*arguments: str, check: bool = True) -> subprocess.CompletedProcess[str
     )
 
 
+def _enable_shallow_updates(mirror: Path) -> None:
+    """Enable shallow pushes without contending on an already-ready mirror."""
+    lock_error = "could not lock config file"
+    for attempt in range(3):
+        current = _run(
+            "git",
+            "--git-dir",
+            str(mirror),
+            "config",
+            "--type=bool",
+            "--get",
+            "receive.shallowUpdate",
+            check=False,
+        )
+        if current.returncode == 0 and current.stdout.strip().lower() == "true":
+            return
+
+        updated = _run(
+            "git",
+            "--git-dir",
+            str(mirror),
+            "config",
+            "receive.shallowUpdate",
+            "true",
+            check=False,
+        )
+        if updated.returncode == 0:
+            return
+        detail = updated.stderr.strip()
+        if lock_error not in detail.lower() or attempt == 2:
+            raise RuntimeError(
+                "could not enable shallow source transfers for "
+                f"{mirror.name}: {detail or 'git config failed'}",
+            )
+        time.sleep(0.05 * (attempt + 1))
+
+    raise RuntimeError(f"could not enable shallow source transfers for {mirror.name}")
+
+
 def ensure_bare_repository(paths: ServerPaths, repository: str) -> Path:
     """Create an allowed bare mirror if it does not exist."""
     name = validate_identifier(repository, "repository")
@@ -31,14 +71,7 @@ def ensure_bare_repository(paths: ServerPaths, repository: str) -> Path:
         _run("git", "init", "--bare", str(mirror))
     elif not (mirror / "HEAD").is_file():
         raise ValueError(f"repository mirror is not bare: {mirror}")
-    _run(
-        "git",
-        "--git-dir",
-        str(mirror),
-        "config",
-        "receive.shallowUpdate",
-        "true",
-    )
+    _enable_shallow_updates(mirror)
     return mirror
 
 

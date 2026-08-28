@@ -182,7 +182,7 @@ scripts/verify-preview-registry.sh \
 Run from the exact worktree being edited:
 
 ```bash
-trie-run run --job api-check-01 --weight heavy -- \
+trie-run run --job api-check-01 --session api-agent --workload compose -- \
   bash -lc 'docker compose build && docker compose run --rm api-tests'
 
 trie-run status api-check-01
@@ -196,14 +196,17 @@ Job IDs contain lowercase letters, numbers, and hyphens and are at most 63 chara
 For a command that needs another worktree:
 
 ```bash
-trie-run run --job integration-01 --weight heavy \
+trie-run run --job integration-01 --session integration-agent --workload e2e \
   --include worker=/absolute/path/to/worker-worktree -- \
   bash -lc 'test -d "$TRIE_WORKER_ROOT" && ./scripts/integration.sh'
 ```
 
-Use `--weight exclusive` for workloads that create shared Kind clusters, bind
-fixed non-job-scoped ports, or otherwise require the server to themselves.
-Ordinary Docker builds and isolated Compose tests should use `heavy`.
+Classify new jobs with `--workload compose`, `browser`, `e2e`, `kind`, or
+`certification`. Compose, browser, and E2E jobs default to `heavy`; Kind and
+certification default to `exclusive` and reject a weaker explicit weight.
+`--session` is optional but recommended for an AI session: a newer queued job
+for that same session supersedes its older queued job, without cancelling a
+running job or work from another session.
 
 ## Safety model
 
@@ -212,6 +215,9 @@ Ordinary Docker builds and isolated Compose tests should use `heavy`.
   `--max-heavy-jobs` option when the host has sufficient capacity.
 - An exclusive job acquires the entire pool and cannot be bypassed by newer
   heavy jobs.
+- An existing bare Git mirror is read before its shallow-transfer setting is
+  changed, so concurrent source reservations do not contend on Git's
+  `config.lock`.
 - Heavy jobs require 100 GiB free by default. Workers warn below 80 GiB and cancel below 60 GiB.
 - Repository names and server paths are validated before use.
 - Commands are transported as JSON argument arrays, not reconstructed shell strings.

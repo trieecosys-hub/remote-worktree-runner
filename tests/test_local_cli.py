@@ -14,6 +14,7 @@ from trie_remote.job_store import OverlayManifest
 from trie_remote.local_cli import (
     build_parser,
     main,
+    resolve_workload_weight,
     run_worktrees,
     validate_requested_command,
 )
@@ -192,6 +193,60 @@ class LocalCliTests(unittest.TestCase):
             .weight,
             "exclusive",
         )
+
+    def test_workload_selects_safe_default_weight_and_session(self) -> None:
+        arguments = build_parser().parse_args(
+            [
+                "run",
+                "--job",
+                "cluster-check",
+                "--session",
+                "center-agent",
+                "--workload",
+                "certification",
+                "--",
+                "true",
+            ],
+        )
+
+        self.assertEqual(arguments.session, "center-agent")
+        self.assertEqual(arguments.workload, "certification")
+        self.assertIsNone(arguments.weight)
+
+    def test_kind_and_certification_default_to_exclusive_weight(self) -> None:
+        for workload in ("kind", "certification"):
+            with self.subTest(workload=workload):
+                self.assertEqual(resolve_workload_weight(workload, None), "exclusive")
+                with self.assertRaisesRegex(ValueError, "requires --weight exclusive"):
+                    resolve_workload_weight(workload, "heavy")
+
+    def test_run_persists_session_and_workload_in_the_job_contract(self) -> None:
+        transport = WorkflowTransport()
+        with (
+            patch(
+                "trie_remote.local_cli.RepositoryState.discover",
+                return_value=self.state,
+            ),
+            patch(
+                "trie_remote.local_cli.RepositoryState.overlay",
+                return_value=OverlayManifest(),
+            ),
+            redirect_stdout(StringIO()),
+        ):
+            run_worktrees(
+                self.state.root,
+                {},
+                "alpha",
+                "exclusive",
+                ["true"],
+                transport,
+                session="center-agent",
+                workload="certification",
+            )
+
+        spec = transport.events[0][1]
+        self.assertEqual(spec.session, "center-agent")
+        self.assertEqual(spec.workload, "certification")
 
     def test_run_discovers_primary_and_include_from_configured_allowlist(self) -> None:
         """Configured repositories must be accepted before source transfer starts."""

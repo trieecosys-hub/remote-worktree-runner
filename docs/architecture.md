@@ -48,7 +48,9 @@ while ordinary heavy jobs acquire one. Permit locks are released by the kernel
 if a worker exits. Default disk thresholds require 100 GiB free to admit heavy
 or exclusive work, warn below 80 GiB, and request cancellation below 60 GiB.
 These values and the permit count are configurable through environment
-variables.
+variables. Jobs can declare a workload class and an optional session. Kind and
+certification classes require exclusive admission; a new queued job replaces
+older queued work from the same declared session.
 
 ## Multi-worktree jobs
 

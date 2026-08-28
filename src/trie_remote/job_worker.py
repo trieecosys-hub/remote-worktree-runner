@@ -51,7 +51,12 @@ def run_job(
         ),
     )
     try:
-        lease = pool.wait(job_id, spec.weight, cancellation.exists)
+        lease = pool.wait(
+            job_id,
+            spec.weight,
+            cancellation.exists,
+            session=spec.session,
+        )
     except SchedulerCancelled:
         store.transition(
             job_id,

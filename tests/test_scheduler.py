@@ -19,6 +19,23 @@ from trie_remote.scheduler import (
 )
 
 
+class QueueStore:
+    """Minimal durable state fixture used by queue supersession tests."""
+
+    def __init__(self, job_ids: set[str]) -> None:
+        self.job_ids = job_ids
+        self.cancelled: list[str] = []
+
+    def exists(self, job_id: str) -> bool:
+        return job_id in self.job_ids
+
+    def status(self, _job_id: str) -> dict[str, str]:
+        return {"state": "queued"}
+
+    def request_cancel(self, job_id: str) -> None:
+        self.cancelled.append(job_id)
+
+
 class SchedulerTests(unittest.TestCase):
     def wait_until(self, predicate: object, timeout: float = 3) -> None:
         deadline = time.monotonic() + timeout
@@ -138,6 +155,56 @@ class SchedulerTests(unittest.TestCase):
             self.assertEqual(errors, [SchedulerCancelled])
             self.assertEqual(pool.snapshot()["queued_jobs"], 0)
             running.release()
+
+    def test_newer_job_supersedes_an_older_queued_job_in_its_session(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = QueueStore({"running", "older", "newer"})
+            pool = ResourcePool(Path(temporary), 1, store)
+            running = pool.wait("running", "heavy", lambda: False)
+            older_cancelled = threading.Event()
+            newer: list[object] = []
+            errors: list[type[BaseException]] = []
+
+            def wait_for_older() -> None:
+                try:
+                    pool.wait(
+                        "older",
+                        "heavy",
+                        older_cancelled.is_set,
+                        session="space-agent",
+                    )
+                except BaseException as error:  # noqa: BLE001
+                    errors.append(type(error))
+
+            older = threading.Thread(target=wait_for_older)
+            older.start()
+            self.wait_until(
+                lambda: pool.snapshot("older").get("queue_position") == 1,
+            )
+
+            def wait_for_newer() -> None:
+                newer.append(
+                    pool.wait(
+                        "newer",
+                        "heavy",
+                        lambda: False,
+                        session="space-agent",
+                    ),
+                )
+
+            replacement = threading.Thread(target=wait_for_newer)
+            replacement.start()
+            self.wait_until(lambda: store.cancelled == ["older"])
+            older_cancelled.set()
+            older.join(timeout=3)
+            self.assertEqual(errors, [SchedulerCancelled])
+            self.assertEqual(pool.snapshot("newer").get("queue_position"), 1)
+
+            running.release()
+            replacement.join(timeout=3)
+            self.assertFalse(replacement.is_alive())
+            self.assertEqual(len(newer), 1)
+            newer[0].release()
 
     def test_kernel_releases_permit_when_worker_process_exits(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

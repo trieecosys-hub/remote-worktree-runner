@@ -18,6 +18,15 @@ from trie_remote.job_store import FINAL_STATES, JobSpec
 from trie_remote.repository import RepositoryState
 from trie_remote.transport import ExecutionStreamDetached, Transport
 
+WORKLOAD_WEIGHTS = {
+    "generic": "heavy",
+    "compose": "heavy",
+    "browser": "heavy",
+    "e2e": "heavy",
+    "kind": "exclusive",
+    "certification": "exclusive",
+}
+
 
 def build_parser() -> argparse.ArgumentParser:
     """Build the local CLI parser."""
@@ -29,7 +38,13 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument(
         "--weight",
         choices=("light", "heavy", "exclusive"),
-        default="heavy",
+        default=None,
+    )
+    run_parser.add_argument("--session")
+    run_parser.add_argument(
+        "--workload",
+        choices=tuple(WORKLOAD_WEIGHTS),
+        default="generic",
     )
     run_parser.add_argument("--include", action="append", default=[])
     run_parser.add_argument("command_arguments", nargs=argparse.REMAINDER)
@@ -94,6 +109,19 @@ def validate_requested_command(argv: list[str]) -> None:
         raise ValueError("daemon-wide Docker operation is not allowed")
 
 
+def resolve_workload_weight(workload: str, requested_weight: str | None) -> str:
+    """Choose a safe scheduler weight for an explicitly classified workload."""
+    try:
+        default_weight = WORKLOAD_WEIGHTS[workload]
+    except KeyError as error:
+        raise ValueError(f"unsupported workload classification: {workload}") from error
+    if requested_weight is None:
+        return default_weight
+    if workload in {"kind", "certification"} and requested_weight != "exclusive":
+        raise ValueError(f"{workload} workload requires --weight exclusive")
+    return requested_weight
+
+
 def _parse_includes(values: list[str]) -> dict[str, Path]:
     includes: dict[str, Path] = {}
     for value in values:
@@ -133,9 +161,16 @@ def run_worktrees(
     argv: list[str],
     transport: Transport,
     allowed_repositories: Collection[str] = DEFAULT_REPOSITORIES,
+    *,
+    session: str | None = None,
+    workload: str = "generic",
 ) -> int:
     """Synchronize exact worktrees, submit a job, and follow its log."""
     validate_identifier(job_id, "job")
+    if session is not None:
+        validate_identifier(session, "session")
+    if workload not in WORKLOAD_WEIGHTS:
+        raise ValueError(f"unsupported workload classification: {workload}")
     validate_requested_command(argv)
     states = {
         "primary": RepositoryState.discover(
@@ -172,6 +207,8 @@ def run_worktrees(
         created_at=datetime.now(timezone.utc).isoformat(),
         commits={role: state.commit for role, state in states.items()},
         overlays=overlays,
+        workload=workload,
+        session=session,
     )
     reservation = transport.reserve(spec)
     try:
@@ -328,10 +365,12 @@ def main(argv: list[str] | None = None) -> int:
                 Path.cwd(),
                 _parse_includes(arguments.include),
                 arguments.job,
-                arguments.weight,
+                resolve_workload_weight(arguments.workload, arguments.weight),
                 command,
                 transport,
                 config.allowed_repositories,
+                session=arguments.session,
+                workload=arguments.workload,
             )
         if arguments.command == "doctor":
             return _doctor(config, transport, arguments.show_sync)
