@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 import tempfile
 import unittest
@@ -417,6 +418,61 @@ class LocalCliTests(unittest.TestCase):
                     "/health",
                 ],
             ],
+        )
+
+    def test_preview_rejection_preserves_server_json_without_raising(self) -> None:
+        class RejectedPreviewTransport:
+            def __init__(self) -> None:
+                self.check: bool | None = None
+
+            def ssh(
+                self,
+                _arguments: list[str],
+                **kwargs: object,
+            ) -> subprocess.CompletedProcess[str]:
+                self.check = bool(kwargs.get("check", True))
+                return subprocess.CompletedProcess(
+                    ["preview-publish"],
+                    2,
+                    stdout=(
+                        '{"error":"preview-publish-rejected",'
+                        '"message":"job does not own preview slot"}\n'
+                    ),
+                )
+
+        transport = RejectedPreviewTransport()
+        output = StringIO()
+        with (
+            patch("trie_remote.local_cli._transport", return_value=transport),
+            redirect_stdout(output),
+        ):
+            result = main(
+                [
+                    "preview",
+                    "publish",
+                    "--job",
+                    "process-preview-01",
+                    "--slot",
+                    "process",
+                    "--project",
+                    "trie-process-preview",
+                    "--service",
+                    "web",
+                    "--port",
+                    "8080",
+                    "--check-path",
+                    "/health",
+                ],
+            )
+
+        self.assertEqual(result, 2)
+        self.assertFalse(transport.check)
+        self.assertEqual(
+            json.loads(output.getvalue()),
+            {
+                "error": "preview-publish-rejected",
+                "message": "job does not own preview slot",
+            },
         )
 
     def test_rejects_daemon_control_commands(self) -> None:

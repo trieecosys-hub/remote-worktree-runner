@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import fcntl
@@ -13,7 +13,6 @@ from pathlib import Path
 import subprocess
 import tempfile
 import time
-from typing import Iterator
 
 from trie_remote.common import validate_identifier
 from trie_remote.job_environment import job_resource_name
@@ -352,7 +351,8 @@ class PreviewRegistry:
                 raise ValueError(f"unknown preview slot: {safe_slot}")
             store = JobStore(self.paths)
             spec = store.load(safe_job)
-            if spec.repository != configured.repository:
+            reserved_repositories = {spec.repository, *spec.includes.values()}
+            if configured.repository not in reserved_repositories:
                 raise ValueError("job repository does not own slot")
             if safe_project not in self._allowed_projects(safe_job, spec.repository):
                 raise ValueError("Compose project is not owned by job")

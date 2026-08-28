@@ -1072,6 +1072,48 @@ class JobLifecycleTests(unittest.TestCase):
                 check_path="/health",
             )
 
+    def test_server_preview_publish_returns_a_structured_rejection(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            environment = {
+                "REMOTE_RUNNER_ROOT": str(Path(temporary) / "root"),
+                "REMOTE_RUNNER_ALLOWED_REPOSITORIES": "trie-space",
+            }
+            output = StringIO()
+            with (
+                patch.dict(os.environ, environment, clear=True),
+                patch("trie_remote.server_cli.PreviewRegistry") as registry_class,
+                redirect_stdout(output),
+            ):
+                registry_class.return_value.publish.side_effect = ValueError(
+                    "job does not own preview slot",
+                )
+                result = server_main(
+                    [
+                        "preview-publish",
+                        "--job",
+                        "space-preview-01",
+                        "--slot",
+                        "space",
+                        "--project",
+                        "trie-space-preview",
+                        "--service",
+                        "web",
+                        "--port",
+                        "8080",
+                        "--check-path",
+                        "/health",
+                    ],
+                )
+
+            self.assertEqual(result, 2)
+            self.assertEqual(
+                json.loads(output.getvalue()),
+                {
+                    "error": "preview-publish-rejected",
+                    "message": "job does not own preview slot",
+                },
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

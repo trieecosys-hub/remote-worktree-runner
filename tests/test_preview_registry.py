@@ -170,15 +170,24 @@ class PreviewRegistryTests(unittest.TestCase):
         job_id: str,
         repository: str = "example-process",
         projects: tuple[str, ...] = (),
+        includes: dict[str, str] | None = None,
     ) -> str:
+        includes = includes or {}
         workspace = self.paths.workspaces / repository / job_id / "primary"
         workspace.mkdir(parents=True)
+        workspaces = {"primary": str(workspace)}
+        for role, included_repository in includes.items():
+            included_workspace = (
+                self.paths.workspaces / included_repository / job_id / role
+            )
+            included_workspace.mkdir(parents=True)
+            workspaces[role] = str(included_workspace)
         spec = JobSpec(
             job_id=job_id,
             repository=repository,
             workspace=str(workspace),
-            workspaces={"primary": str(workspace)},
-            includes={},
+            workspaces=workspaces,
+            includes=includes,
             weight="light",
             argv=("true",),
             created_at=datetime.now(timezone.utc).isoformat(),
@@ -224,6 +233,26 @@ class PreviewRegistryTests(unittest.TestCase):
             self.publish(job_id="preview-01", project=project)
 
         self.assertEqual(self.docker.calls, [])
+
+    def test_publish_allows_a_slot_owned_by_a_reserved_include_repository(self) -> None:
+        project = self.create_job(
+            "preview-01",
+            repository="example-center",
+            includes={"process": "example-process"},
+        )
+        container_id = "a" * 64
+        self.docker.add_container(
+            container_id=container_id,
+            project=project,
+            service="web",
+        )
+        self.http.queue("172.30.0.10", 200)
+        self.http.queue("127.0.0.1", 200)
+
+        route = self.publish(job_id="preview-01", project=project)
+
+        self.assertEqual(route.slot, "process")
+        self.assertEqual(route.repository, "example-process")
 
     def test_publish_rejects_unrecorded_compose_project(self) -> None:
         self.create_job("preview-01")

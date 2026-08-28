@@ -278,14 +278,26 @@ def main(argv: list[str] | None = None) -> int:
     paths.create()
     store = JobStore(paths)
     if arguments.command == "preview-publish":
-        route = PreviewRegistry(paths).publish(
-            job_id=arguments.job,
-            slot=arguments.slot,
-            project=arguments.project,
-            service=arguments.service,
-            port=arguments.port,
-            check_path=arguments.check_path,
-        )
+        try:
+            route = PreviewRegistry(paths).publish(
+                job_id=arguments.job,
+                slot=arguments.slot,
+                project=arguments.project,
+                service=arguments.service,
+                port=arguments.port,
+                check_path=arguments.check_path,
+            )
+        except ValueError as error:
+            print(
+                json.dumps(
+                    {
+                        "error": "preview-publish-rejected",
+                        "message": str(error),
+                    },
+                    sort_keys=True,
+                ),
+            )
+            return 2
         print(json.dumps(asdict(route), sort_keys=True))
         return 0
 

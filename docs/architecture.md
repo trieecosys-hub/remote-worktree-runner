@@ -92,6 +92,11 @@ that writes managed preview routes. Each route starts with a compact ownership
 record containing the slot, repository, job, Compose project and service,
 container ID, internal port, check path, and publication time.
 
+The job may publish a slot only for its primary repository or a repository in
+its immutable included-worktree reservation. It must also name a Compose
+project recorded for that exact job; this permits integrated previews without
+granting a job authority over arbitrary slots or projects.
+
 Publication resolves exactly one running Compose container from project and
 service labels. A health check, when present, must report healthy. The selected
 container joins the external edge network under a unique network alias. The

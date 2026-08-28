@@ -336,7 +336,7 @@ def _preview(arguments: argparse.Namespace, transport: Transport) -> int:
         remote_arguments.extend(
             ["--job", arguments.job, "--slot", arguments.slot],
         )
-    result = transport.ssh(remote_arguments)
+    result = transport.ssh(remote_arguments, check=False)
     if result.stdout:
         output = (
             result.stdout.decode()

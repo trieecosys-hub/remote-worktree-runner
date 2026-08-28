@@ -161,6 +161,11 @@ The previous route remains available until the candidate passes both a direct
 container check and a request through the loopback gateway. To remove a route,
 name its current owner:
 
+A joint job may publish a slot for its primary repository or for any repository
+named by its exact `--include` reservation. The Compose project must still have
+been recorded by that same job. Rejections return JSON with stable `error` and
+`message` fields and exit code `2`.
+
 ```bash
 trie-run preview unpublish --job api-preview-01 --slot api
 trie-run cleanup api-preview-01 --volumes
