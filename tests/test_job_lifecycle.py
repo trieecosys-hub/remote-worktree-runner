@@ -110,6 +110,48 @@ class JobLifecycleTests(unittest.TestCase):
             self.assertEqual(json.loads(output.getvalue())["state"], "cancelled")
             start_job.assert_not_called()
 
+    def test_execute_finalizes_a_preparing_job_rejected_by_disk_admission(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "root"
+            paths = ServerPaths.from_root(root)
+            paths.create()
+            workspace = root / "workspaces/trie-space/disk-rejected/primary"
+            spec = JobSpec(
+                job_id="disk-rejected",
+                repository="trie-space",
+                workspace=str(workspace),
+                workspaces={"primary": str(workspace)},
+                includes={},
+                weight="heavy",
+                argv=("true",),
+                created_at="2026-08-31T00:00:00+00:00",
+            )
+            store = JobStore(paths)
+            store.create(spec)
+            output = StringIO()
+            environment = {
+                "REMOTE_RUNNER_ROOT": str(root),
+                "REMOTE_RUNNER_ALLOWED_REPOSITORIES": "trie-space",
+            }
+            rejection = RuntimeError(
+                "heavy job rejected: 99 GiB free, 100 GiB required",
+            )
+            with (
+                patch.dict(os.environ, environment, clear=True),
+                patch("trie_remote.server_cli.DiskGuard.admit", side_effect=rejection),
+                patch("trie_remote.server_cli.subprocess.run") as run,
+                redirect_stdout(output),
+            ):
+                result = server_main(["execute", "--job", "disk-rejected"])
+
+            status = json.loads(output.getvalue())
+            self.assertEqual(result, 1)
+            self.assertEqual(status["state"], "failed")
+            self.assertEqual(status["exit_code"], 1)
+            self.assertEqual(status["reason"], f"admission rejected: {rejection}")
+            self.assertEqual(store.status("disk-rejected"), status)
+            run.assert_not_called()
+
     def test_reserve_describes_all_mirrors_and_workspaces(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "root"

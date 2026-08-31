@@ -16,7 +16,7 @@ from trie_remote.server_paths import ServerPaths
 
 FINAL_STATES = frozenset({"passed", "failed", "cancelled"})
 TRANSITIONS = {
-    "preparing": frozenset({"queued", "cancelled"}),
+    "preparing": frozenset({"queued", "failed", "cancelled"}),
     "queued": frozenset({"running", "failed", "cancelled"}),
     "running": FINAL_STATES,
 }

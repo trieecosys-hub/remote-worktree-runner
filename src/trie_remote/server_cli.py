@@ -130,14 +130,23 @@ def _start_job(
             if status["state"] in FINAL_STATES:
                 return status
             raise ValueError("only a preparing job can be started")
+    else:
+        store.create(spec)
     guard = DiskGuard(
         config.minimum_free_gib,
         config.warning_free_gib,
         config.cancellation_free_gib,
     )
-    free_bytes = guard.admit(paths.root, spec.weight)
-    if not reserved:
-        store.create(spec)
+    try:
+        free_bytes = guard.admit(paths.root, spec.weight)
+    except RuntimeError as error:
+        return store.transition(
+            spec.job_id,
+            "failed",
+            exit_code=1,
+            reason=f"admission rejected: {error}",
+            finished_at=utc_now(),
+        )
     unit = f"trie-job-{spec.job_id}"
     status = store.transition(
         spec.job_id,
